@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://b1xr84xrcwk8e"
+
+[deps]
+
+files=["res://balance-results/none.mined.translation", "res://balance-results/none.delivered.translation", "res://balance-results/none.processed.translation", "res://balance-results/none.placed.translation", "res://balance-results/none.coins.translation", "res://balance-results/none.activePorters.translation", "res://balance-results/none.upgradeLevels.translation", "res://balance-results/none.quarryQueue.translation", "res://balance-results/none.rawStock.translation", "res://balance-results/none.brickStock.translation", "res://balance-results/none.platformStock.translation", "res://balance-results/none.currentLayer.translation", "res://balance-results/none.currentRow.translation", "res://balance-results/none.portersOnTrip.translation", "res://balance-results/none.ratesPerMinute.translation", "res://balance-results/none.blockedWorkerSeconds.translation", "res://balance-results/none.limitationScores.translation"]
+
+source_file="res://balance-results/none.csv"
+dest_files=["res://balance-results/none.mined.translation", "res://balance-results/none.delivered.translation", "res://balance-results/none.processed.translation", "res://balance-results/none.placed.translation", "res://balance-results/none.coins.translation", "res://balance-results/none.activePorters.translation", "res://balance-results/none.upgradeLevels.translation", "res://balance-results/none.quarryQueue.translation", "res://balance-results/none.rawStock.translation", "res://balance-results/none.brickStock.translation", "res://balance-results/none.platformStock.translation", "res://balance-results/none.currentLayer.translation", "res://balance-results/none.currentRow.translation", "res://balance-results/none.portersOnTrip.translation", "res://balance-results/none.ratesPerMinute.translation", "res://balance-results/none.blockedWorkerSeconds.translation", "res://balance-results/none.limitationScores.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://c8hrf8eagy657"
+
+[deps]
+
+files=["res://balance-results/purchases.simTime.translation", "res://balance-results/purchases.upgrade.translation", "res://balance-results/purchases.price.translation", "res://balance-results/purchases.newLevel.translation"]
+
+source_file="res://balance-results/purchases.csv"
+dest_files=["res://balance-results/purchases.simTime.translation", "res://balance-results/purchases.upgrade.translation", "res://balance-results/purchases.price.translation", "res://balance-results/purchases.newLevel.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

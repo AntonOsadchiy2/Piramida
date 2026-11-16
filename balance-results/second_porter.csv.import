@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://dc15o0kxccnej"
+
+[deps]
+
+files=["res://balance-results/second_porter.mined.translation", "res://balance-results/second_porter.delivered.translation", "res://balance-results/second_porter.processed.translation", "res://balance-results/second_porter.placed.translation", "res://balance-results/second_porter.coins.translation", "res://balance-results/second_porter.activePorters.translation", "res://balance-results/second_porter.upgradeLevels.translation", "res://balance-results/second_porter.quarryQueue.translation", "res://balance-results/second_porter.rawStock.translation", "res://balance-results/second_porter.brickStock.translation", "res://balance-results/second_porter.platformStock.translation", "res://balance-results/second_porter.currentLayer.translation", "res://balance-results/second_porter.currentRow.translation", "res://balance-results/second_porter.portersOnTrip.translation", "res://balance-results/second_porter.ratesPerMinute.translation", "res://balance-results/second_porter.blockedWorkerSeconds.translation", "res://balance-results/second_porter.limitationScores.translation"]
+
+source_file="res://balance-results/second_porter.csv"
+dest_files=["res://balance-results/second_porter.mined.translation", "res://balance-results/second_porter.delivered.translation", "res://balance-results/second_porter.processed.translation", "res://balance-results/second_porter.placed.translation", "res://balance-results/second_porter.coins.translation", "res://balance-results/second_porter.activePorters.translation", "res://balance-results/second_porter.upgradeLevels.translation", "res://balance-results/second_porter.quarryQueue.translation", "res://balance-results/second_porter.rawStock.translation", "res://balance-results/second_porter.brickStock.translation", "res://balance-results/second_porter.platformStock.translation", "res://balance-results/second_porter.currentLayer.translation", "res://balance-results/second_porter.currentRow.translation", "res://balance-results/second_porter.portersOnTrip.translation", "res://balance-results/second_porter.ratesPerMinute.translation", "res://balance-results/second_porter.blockedWorkerSeconds.translation", "res://balance-results/second_porter.limitationScores.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

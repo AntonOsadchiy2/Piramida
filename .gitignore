@@ -1,0 +1,10 @@
+/.godot/
+
+/build/
+/android/
+*.apk
+*.aab
+*.keystore
+*.jks
+*.p12
+*.pfx

@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://dquawlajftcw6"
+
+[deps]
+
+files=["res://balance-results/reload.mined.translation", "res://balance-results/reload.delivered.translation", "res://balance-results/reload.processed.translation", "res://balance-results/reload.placed.translation", "res://balance-results/reload.coins.translation", "res://balance-results/reload.activePorters.translation", "res://balance-results/reload.upgradeLevels.translation", "res://balance-results/reload.quarryQueue.translation", "res://balance-results/reload.rawStock.translation", "res://balance-results/reload.brickStock.translation", "res://balance-results/reload.platformStock.translation", "res://balance-results/reload.currentLayer.translation", "res://balance-results/reload.currentRow.translation", "res://balance-results/reload.portersOnTrip.translation", "res://balance-results/reload.ratesPerMinute.translation", "res://balance-results/reload.blockedWorkerSeconds.translation", "res://balance-results/reload.limitationScores.translation"]
+
+source_file="res://balance-results/reload.csv"
+dest_files=["res://balance-results/reload.mined.translation", "res://balance-results/reload.delivered.translation", "res://balance-results/reload.processed.translation", "res://balance-results/reload.placed.translation", "res://balance-results/reload.coins.translation", "res://balance-results/reload.activePorters.translation", "res://balance-results/reload.upgradeLevels.translation", "res://balance-results/reload.quarryQueue.translation", "res://balance-results/reload.rawStock.translation", "res://balance-results/reload.brickStock.translation", "res://balance-results/reload.platformStock.translation", "res://balance-results/reload.currentLayer.translation", "res://balance-results/reload.currentRow.translation", "res://balance-results/reload.portersOnTrip.translation", "res://balance-results/reload.ratesPerMinute.translation", "res://balance-results/reload.blockedWorkerSeconds.translation", "res://balance-results/reload.limitationScores.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

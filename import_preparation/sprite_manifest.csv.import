@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://dttf6x6rf0kev"
+
+[deps]
+
+files=["res://import_preparation/sprite_manifest.File.translation", "res://import_preparation/sprite_manifest.Width.translation", "res://import_preparation/sprite_manifest.Height.translation", "res://import_preparation/sprite_manifest.Style.translation", "res://import_preparation/sprite_manifest.Source.translation"]
+
+source_file="res://import_preparation/sprite_manifest.csv"
+dest_files=["res://import_preparation/sprite_manifest.File.translation", "res://import_preparation/sprite_manifest.Width.translation", "res://import_preparation/sprite_manifest.Height.translation", "res://import_preparation/sprite_manifest.Style.translation", "res://import_preparation/sprite_manifest.Source.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

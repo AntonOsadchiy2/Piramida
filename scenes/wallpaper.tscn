@@ -1,0 +1,12 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/application/wallpaper.gd" id="1_wallpaper"]
+[ext_resource type="Script" path="res://scripts/presentation/cloud_layer.gd" id="2_cloud_layer"]
+
+[node name="PyramidWallpaper" type="Node2D"]
+texture_filter = 1
+script = ExtResource("1_wallpaper")
+
+[node name="CloudLayer" type="Node2D" parent="."]
+z_index = -9
+script = ExtResource("2_cloud_layer")

@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://bqpxhuudsd7i4"
+
+[deps]
+
+files=["res://balance-results/transport.mined.translation", "res://balance-results/transport.delivered.translation", "res://balance-results/transport.processed.translation", "res://balance-results/transport.placed.translation", "res://balance-results/transport.coins.translation", "res://balance-results/transport.activePorters.translation", "res://balance-results/transport.upgradeLevels.translation", "res://balance-results/transport.quarryQueue.translation", "res://balance-results/transport.rawStock.translation", "res://balance-results/transport.brickStock.translation", "res://balance-results/transport.platformStock.translation", "res://balance-results/transport.currentLayer.translation", "res://balance-results/transport.currentRow.translation", "res://balance-results/transport.portersOnTrip.translation", "res://balance-results/transport.ratesPerMinute.translation", "res://balance-results/transport.blockedWorkerSeconds.translation", "res://balance-results/transport.limitationScores.translation"]
+
+source_file="res://balance-results/transport.csv"
+dest_files=["res://balance-results/transport.mined.translation", "res://balance-results/transport.delivered.translation", "res://balance-results/transport.processed.translation", "res://balance-results/transport.placed.translation", "res://balance-results/transport.coins.translation", "res://balance-results/transport.activePorters.translation", "res://balance-results/transport.upgradeLevels.translation", "res://balance-results/transport.quarryQueue.translation", "res://balance-results/transport.rawStock.translation", "res://balance-results/transport.brickStock.translation", "res://balance-results/transport.platformStock.translation", "res://balance-results/transport.currentLayer.translation", "res://balance-results/transport.currentRow.translation", "res://balance-results/transport.portersOnTrip.translation", "res://balance-results/transport.ratesPerMinute.translation", "res://balance-results/transport.blockedWorkerSeconds.translation", "res://balance-results/transport.limitationScores.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

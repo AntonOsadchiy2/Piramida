@@ -1,0 +1,50 @@
+{
+  "configVersion": 1,
+  "world": {
+    "quarryLayers": 30,
+    "quarryStepX": 0.32,
+    "quarryLayerHeight": 0.125,
+    "quarryCenterX": -9.45,
+    "terraceDrop": 0.65,
+    "rawStorageX": 0.8,
+    "workshopX": 1.8,
+    "pyramidLeft": 9.0,
+    "platformOffset": 0.8,
+    "pyramidRows": 30,
+    "pyramidBaseRowBricks": 59,
+    "rowWidthDecrease": 2,
+    "brickWidth": 0.36,
+    "brickHeight": 0.28
+  },
+  "storages": {
+    "quarryReadyCapacity": 15,
+    "quarryStockCapacity": 8,
+    "raw": 30,
+    "workshopOutput": 8,
+    "finished": 30,
+    "platform": 6
+  },
+  "workers": {
+    "miner": { "mineSeconds": 3.5, "moveSpeed": 2.6 },
+    "porter": { "count": 1, "maxCount": 8, "emptySpeed": 3.2, "loadedSpeed": 2.8, "extraItemSpeedMultiplier": 0.94, "loadSeconds": 0.5, "unloadSeconds": 0.7 },
+    "dresser": { "processSeconds": 3.0 },
+    "builder": { "placeSeconds": 2.4, "moveSpeed": 3.2 }
+  },
+  "lift": { "baseSeconds": 1.5, "secondsPerRow": 0.15, "rebuildSeconds": 1.0 },
+  "economy": { "startCoins": 120, "coinsPerBrick": 10, "coinsPerRow": 50 },
+  "upgrades": {
+    "speedPriceMultiplier": 1.5,
+    "maxSpeedLevel": 8,
+    "speed": {
+      "MINER_SPEED": { "baseCost": 40, "multiplier": 1.18 },
+      "DRESSER_SPEED": { "baseCost": 35, "multiplier": 1.18 },
+      "BUILDER_SPEED": { "baseCost": 45, "multiplier": 1.18 },
+      "PORTER_SPEED": { "baseCost": 60, "multiplier": 1.15 }
+    },
+    "capacityCosts": [200, 650, 1800, 1800, 1800, 1800, 1800],
+    "hireBaseCost": 100,
+    "hirePriceMultiplier": 1.7
+  },
+  "simulation": { "fixedStepSeconds": 0.1, "offlineCapSeconds": 14400, "autosaveSeconds": 30 }
+}
+

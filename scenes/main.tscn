@@ -1,0 +1,71 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/application/main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/presentation/world_presenter.gd" id="2_world"]
+
+[ext_resource type="Script" path="res://scripts/presentation/site_camera.gd" id="3_camera"]
+
+[ext_resource type="Script" path="res://scripts/presentation/hud_presenter.gd" id="4_hud"]
+
+[ext_resource type="AudioStream" path="res://assets/audio/nile_at_dusk.wav" id="5_music"]
+
+[ext_resource type="Script" path="res://scripts/presentation/site_audio.gd" id="6_sfx"]
+
+[node name="Main" type="Node2D"]
+texture_filter = 1
+script = ExtResource("1_main")
+
+[node name="World" type="Node2D" parent="."]
+script = ExtResource("2_world")
+
+[node name="PyramidTiles" type="TileMapLayer" parent="World"]
+
+[node name="Workers" type="Node2D" parent="World"]
+
+[node name="Cargo" type="Node2D" parent="World"]
+
+[node name="Camera2D" type="Camera2D" parent="World"]
+
+script = ExtResource("3_camera")
+
+[node name="HUD" type="CanvasLayer" parent="."]
+
+[node name="Control" type="Control" parent="HUD"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("4_hud")
+mouse_filter = 2
+
+
+[node name="CameraButtons" type="HBoxContainer" parent="HUD/Control"]
+offset_left = 12.0
+offset_top = 12.0
+mouse_filter = 2
+theme_override_constants/separation = 8
+
+[node name="Overview" type="Button" parent="HUD/Control/CameraButtons"]
+custom_minimum_size = Vector2(116, 48)
+layout_mode = 2
+text = "Вся стройка"
+
+[node name="Quarry" type="Button" parent="HUD/Control/CameraButtons"]
+custom_minimum_size = Vector2(94, 48)
+layout_mode = 2
+text = "Карьер"
+
+[node name="Construction" type="Button" parent="HUD/Control/CameraButtons"]
+custom_minimum_size = Vector2(94, 48)
+layout_mode = 2
+text = "Пирамида"
+
+[node name="Audio" type="Node" parent="."]
+script = ExtResource("6_sfx")
+
+[node name="Music" type="AudioStreamPlayer" parent="Audio"]
+stream = ExtResource("5_music")
+volume_db = -6.0
+autoplay = true
+bus = &"Music"

@@ -1,0 +1,53 @@
+[gd_scene format=3]
+
+[ext_resource type="Texture2D" path="res://assets/wallpaper/torches/torch.png" id="1_stand"]
+[ext_resource type="Shader" path="res://assets/wallpaper/torches/torch_flame.gdshader" id="2_flame"]
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_stand"]
+atlas = ExtResource("1_stand")
+region = Rect2(234, 136, 268, 1857)
+filter_clip = true
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_flame"]
+resource_local_to_scene = true
+shader = ExtResource("2_flame")
+
+[sub_resource type="Gradient" id="Gradient_light"]
+interpolation_mode = 2
+offsets = PackedFloat32Array(0, 0.32, 0.67, 1)
+colors = PackedColorArray(1, 1, 1, 1, 1, 1, 1, 0.69, 1, 1, 1, 0.21, 1, 1, 1, 0)
+
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_light"]
+gradient = SubResource("Gradient_light")
+width = 256
+height = 256
+fill = 1
+fill_from = Vector2(0.5, 0.5)
+fill_to = Vector2(1, 0.5)
+
+[node name="Torch" type="Node2D"]
+
+[node name="Stand" type="Sprite2D" parent="."]
+z_index = 2
+texture = SubResource("AtlasTexture_stand")
+scale = Vector2(0.05, 0.05)
+offset = Vector2(0, -928.5)
+
+[node name="Flame" type="ColorRect" parent="."]
+visible = false
+z_index = 5
+material = SubResource("ShaderMaterial_flame")
+offset_left = -17.0
+offset_top = -129.0
+offset_right = 17.0
+offset_bottom = -86.0
+mouse_filter = 2
+
+[node name="Light" type="PointLight2D" parent="."]
+position = Vector2(0, -83)
+enabled = false
+color = Color(1, 0.63, 0.37, 1)
+range_z_min = -7
+range_z_max = 6
+texture = SubResource("GradientTexture2D_light")
+texture_scale = 1.35

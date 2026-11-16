@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://d1kc8qt27mox0"
+
+[deps]
+
+files=["res://balance-results/mining.mined.translation", "res://balance-results/mining.delivered.translation", "res://balance-results/mining.processed.translation", "res://balance-results/mining.placed.translation", "res://balance-results/mining.coins.translation", "res://balance-results/mining.activePorters.translation", "res://balance-results/mining.upgradeLevels.translation", "res://balance-results/mining.quarryQueue.translation", "res://balance-results/mining.rawStock.translation", "res://balance-results/mining.brickStock.translation", "res://balance-results/mining.platformStock.translation", "res://balance-results/mining.currentLayer.translation", "res://balance-results/mining.currentRow.translation", "res://balance-results/mining.portersOnTrip.translation", "res://balance-results/mining.ratesPerMinute.translation", "res://balance-results/mining.blockedWorkerSeconds.translation", "res://balance-results/mining.limitationScores.translation"]
+
+source_file="res://balance-results/mining.csv"
+dest_files=["res://balance-results/mining.mined.translation", "res://balance-results/mining.delivered.translation", "res://balance-results/mining.processed.translation", "res://balance-results/mining.placed.translation", "res://balance-results/mining.coins.translation", "res://balance-results/mining.activePorters.translation", "res://balance-results/mining.upgradeLevels.translation", "res://balance-results/mining.quarryQueue.translation", "res://balance-results/mining.rawStock.translation", "res://balance-results/mining.brickStock.translation", "res://balance-results/mining.platformStock.translation", "res://balance-results/mining.currentLayer.translation", "res://balance-results/mining.currentRow.translation", "res://balance-results/mining.portersOnTrip.translation", "res://balance-results/mining.ratesPerMinute.translation", "res://balance-results/mining.blockedWorkerSeconds.translation", "res://balance-results/mining.limitationScores.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true
