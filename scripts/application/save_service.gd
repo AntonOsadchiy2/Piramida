@@ -11,13 +11,11 @@ enum Status { OK, MISSING, INVALID, UNSUPPORTED, IO_ERROR }
 var _balance: Dictionary
 var _path: String
 var _schema_version: int
-var _economy_enabled: bool
 
 
-func _init(balance: Dictionary, path: String = "user://saves/save.json", economy_enabled: bool = true) -> void:
+func _init(balance: Dictionary, path: String = "user://wallpaper/save.json") -> void:
 	_balance = balance.duplicate(true)
 	_path = path
-	_economy_enabled = economy_enabled
 	_schema_version = WALLPAPER_SLOPES_SCHEMA_VERSION if balance.world.get("quarrySlopesOnly", false) else SCHEMA_VERSION
 	if balance.world.get("pyramidRamp", false):
 		_schema_version = WALLPAPER_RAMP_SCHEMA_VERSION
@@ -122,7 +120,7 @@ func _read(path: String) -> Dictionary:
 			return {"status": Status.INVALID}
 	if not lifecycle.get("tutorialSkipped", false) is bool:
 		return {"status": Status.INVALID}
-	var simulation := Simulation.from_dict(_balance, data.simulation, _economy_enabled)
+	var simulation := Simulation.from_dict(_balance, data.simulation)
 	if simulation == null:
 		return {"status": Status.INVALID}
 	var quarry_layout := 7 if _schema_version == SCHEMA_VERSION else WALLPAPER_SLOPES_SCHEMA_VERSION
@@ -135,7 +133,7 @@ func _read(path: String) -> Dictionary:
 		return {"status": Status.INVALID}
 	var result := {"status": Status.OK, "simulation": simulation, "saved_at_utc": int(data.savedAtUtc),
 		"text": source, "lifecycle": lifecycle}
-	if not _economy_enabled and data.get("wallpaperTransferFacing") is Dictionary:
+	if data.get("wallpaperTransferFacing") is Dictionary:
 		result["transfer_facing"] = data.wallpaperTransferFacing
 	return result
 

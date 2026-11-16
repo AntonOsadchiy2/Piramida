@@ -1,13 +1,6 @@
 extends Node2D
 
-signal worker_selected(id: int)
 signal wallpaper_sky_area_changed
-
-enum ArtSet { GAME, WALLPAPER }
-
-@export var art_set: ArtSet = ArtSet.GAME
-
-var selected_worker_id := -1
 
 const State = preload("res://scripts/domain/game_state.gd")
 const Owner = State.Owner
@@ -18,7 +11,6 @@ const RAW_STONE_SCALE := Vector2(0.94, 0.75)
 const ASSETS := "res://assets/sprites/"
 const PLACEHOLDERS := "res://assets/placeholders/"
 const SAND_SCALE := 0.5
-const GAME_SAND := preload("res://assets/sprites/ground.png")
 const WALLPAPER_SAND := preload("res://assets/wallpaper/sand.png")
 const WALLPAPER_ART := [
 	"lift_cradle", "lift_pulley", "platform",
@@ -44,7 +36,6 @@ const BUILDER_PLACE_GRIP := (Vector2(128.5, 63.5) - BUILDER_PLACE_FEET) * WORKER
 const BUILDER_PLACEMENT_APPROACH := 88.0
 const BUILDER_LIFT_APPROACH := 110.0
 const PORTER_SLED_DISTANCE := 94.0
-const SLED_HITCH := Vector2(37.0, -13.0)
 const WALLPAPER_SLED_HITCH := Vector2(50.0, -11.0)
 const PORTER_SLED_COLUMNS := 3
 const PORTER_SLED_COLUMN_SPACING := 42.0
@@ -94,7 +85,6 @@ var _quarry_rim: Line2D
 var _foreground: Polygon2D
 var _foreground_rect: Rect2
 var _star_points := PackedVector3Array()
-var _wallpaper: bool
 var _views: Dictionary[int, Dictionary] = {}
 var overseer: SiteOverseer
 var _piles: Dictionary[int, Array] = {}
@@ -118,7 +108,6 @@ var _upper_cable: Line2D
 var _cable_support: Sprite2D
 var _effects: Dictionary[StringName, Sprite2D]
 var _effect_tweens: Dictionary[StringName, Tween]
-var _selection: Line2D
 var _platform_before: Vector2
 var _platform_after: Vector2
 var _platform_pile_anchor := Vector2.INF
@@ -143,11 +132,8 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 		transfer_facing: Dictionary = {}) -> void:
 	_geometry = state.geometry
 	_world = balance.world
-	_wallpaper = art_set == ArtSet.WALLPAPER
 	_step_seconds = float(balance.simulation.fixedStepSeconds)
 	for action in SIMPLE_FRAMES:
-		if not _wallpaper and action != "mine":
-			continue
 		var folder := ASSETS if action == "mine" else "res://assets/wallpaper/workers/"
 		var frames: Array[Texture2D] = []
 		for index in range(SIMPLE_FRAMES[action].size()):
@@ -156,13 +142,12 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 		_worker_frames[action] = frames
 	for name in ["brick", "stone", "workshop_canopy",
 			"lift_cradle", "lift_pulley", "platform",
-			"beam", "post", "sled", "miner", "porter", "dresser", "builder",
-			"sky", "dunes", "brace", "dust", "stone_chip"]:
-		if _wallpaper and name == "sled":
+			"beam", "post", "sled", "miner", "porter", "dresser", "builder", "dust"]:
+		if name == "sled":
 			_art[name] = load("res://assets/wallpaper/sled.png")
-		elif _wallpaper and name in WALLPAPER_ART:
+		elif name in WALLPAPER_ART:
 			_art[name] = load(PLACEHOLDERS + name + ".svg")
-		elif not _wallpaper or name not in ["brace", "stone_chip"]:
+		else:
 			_art[name] = load(ASSETS + name + ".png")
 
 	var layers := _geometry.quarry_layers()
@@ -186,18 +171,14 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 	_placing_brick.hide()
 
 	# The original framing and background belong to the upper scene.
-	var original_left := -1080.0 if _wallpaper else -1800.0
-	var original_bottom := 840.0 if _wallpaper else 720.0
+	var original_left := -1080.0
+	var original_bottom := 840.0
 	var landscape_left := original_left - 1800.0
 	var landscape_width := right - landscape_left + 1800.0
-	if _wallpaper:
-		_create_sky()
-	else:
-		_rectangle("sky", Rect2(landscape_left, -3000, landscape_width, 3200), -10)
-		_create_dunes(landscape_left, landscape_width)
+	_create_sky()
 	var terrace_y := screen_point(_geometry.quarry_mouth()).y
 	_create_terraces(Rect2(landscape_left, terrace_y, landscape_width, pit_bottom - terrace_y + 1200))
-	for effect: StringName in [&"dust", &"stone_chip"]:
+	for effect: StringName in [&"dust"]:
 		if not _art.has(effect):
 			continue
 		var sprite := _sprite(effect, self)
@@ -216,15 +197,11 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 	canopy.position.x -= 10.0
 	canopy.z_index = -1
 	var lift_base: Vector2 = _geometry.platform(0)
-	if not _wallpaper:
-		var brace := _prop("brace", lift_base + Vector2(-0.64, 0))
-		brace.flip_h = true
-		brace.z_index = -2
 	_lift_base = screen_point(lift_base)
-	var hub_height := 75.0 if _wallpaper else 60.0
+	var hub_height := 75.0
 	# Keep the inner edge of the textured elbow from folding over the fist.
-	var crank_radius := 8.0 if _wallpaper else 16.0
-	var hub := screen_point(_geometry.lift_operator_position()) + Vector2(51 if _wallpaper else 46, -hub_height)
+	var crank_radius := 8.0
+	var hub := screen_point(_geometry.lift_operator_position()) + Vector2(51, -hub_height)
 	_winch_line(self, [hub + Vector2(-14, hub_height), hub, hub + Vector2(14, hub_height)], 8, Color("#694b35"))
 	_crank = Node2D.new()
 	_crank.position = hub
@@ -267,16 +244,6 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 
 	workers.z_index = 4
 	workers.y_sort_enabled = true
-	_selection = Line2D.new()
-	_selection.width = 4.0
-	_selection.default_color = Color("#fff0ae")
-	_selection.antialiased = true
-	_selection.closed = true
-	_selection.z_index = 1
-	for i in range(40):
-		_selection.add_point(Vector2.from_angle(TAU * i / 40.0) * 27.0)
-	workers.add_child(_selection)
-	_selection.hide()
 	cargo.z_index = 3
 	for i in range(int(balance.storages.quarryReadyCapacity)):
 		_quarry_stones.append(_sprite("stone", cargo))
@@ -308,14 +275,13 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 		Rect2(pit_left - 220, -100, pit_right - pit_left + 440, pit_bottom + 150),
 		Rect2(pile_left - 30.0, bounds.position.y,
 			bounds.end.x - pile_left + 30.0, -bounds.position.y + 140))
-	if _wallpaper:
-		# The child camera connected in _ready() and updates its transform first.
-		get_viewport().size_changed.connect(_layout_wallpaper_sky)
-		_layout_wallpaper_sky()
+	# The child camera connected in _ready() and updates its transform first.
+	get_viewport().size_changed.connect(_layout_wallpaper_sky)
+	_layout_wallpaper_sky()
 	sync_state(state, true, transfer_facing)
 	# Patrol along the front of the upper terrace, outside the quarry cut.
 	overseer = SiteOverseer.new()
-	overseer.planted_stance = _wallpaper
+	overseer.planted_stance = true
 	workers.add_child(overseer)
 	var watched_workers: Array[Node2D] = [
 		_views[Owner.MINER].root, _views[Owner.DRESSER].root, _views[Owner.BUILDER].root,
@@ -327,7 +293,7 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 			Vector2(pit_right + 80.0, 30.0),
 			Vector2(screen_point(_geometry.workshop()).x - 65.0, 30.0),
 			Vector2(left + 45.0, 30.0),
-		], watched_workers, not _wallpaper)
+		], watched_workers, false)
 	render_frame(1.0, 0.0)
 
 
@@ -391,9 +357,8 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 	_deck_end = screen_point(route[-1]).x
 	if builder.fsm_state == &"return_to_platform":
 		var return_column := maxi(0, target - 1)
-		if _wallpaper:
-			# Count the laid brick before clamping to the row's last column.
-			return_column = clampi(placed - state.row_start - 1, 0, _geometry.row_size(_row) - 1)
+		# Count the laid brick before clamping to the row's last column.
+		return_column = clampi(placed - state.row_start - 1, 0, _geometry.row_size(_row) - 1)
 		_deck_end = screen_point(_geometry.builder_to_brick(_row, return_column)[-1]).x
 
 	for owner in _piles:
@@ -410,7 +375,7 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 			_views[id] = _create_worker(id)
 		var view := _views[id]
 		var worker := state.worker(id)
-		var miner_sled := _wallpaper and id == Owner.MINER
+		var miner_sled := id == Owner.MINER
 		var handles_sled: bool = view.has("transfer_item")
 		view.quarry_haul = _geometry.quarry_slopes != null and (miner_sled or id >= Owner.FIRST_PORTER) \
 			and state.transfer_source(id) == Owner.QUARRY
@@ -418,7 +383,7 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 		if view.cranking:
 			_crank_seconds_left = worker.remaining_work
 		var point := screen_point(worker.position)
-		if _wallpaper and view.has("walker"):
+		if view.has("walker"):
 			var shift := 0.0
 			var gap := point.distance_to(screen_point(_geometry.lift_operator_position()))
 			var waiting_at_crank := id == Owner.MINER and gap < 0.1
@@ -468,7 +433,7 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 		view.after = point
 		view.active = worker.fsm_state in ACTIONS
 		var count := state.stock_count(id)
-		var composite_dresser := _wallpaper and id == Owner.DRESSER and worker.fsm_state == &"process_brick"
+		var composite_dresser := id == Owner.DRESSER and worker.fsm_state == &"process_brick"
 		var transferring := false
 		var carrying_brick := false
 		if handles_sled:
@@ -483,13 +448,12 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 			var delta: Vector2 = point - view.before
 			var distance := delta.length()
 			var travel := delta / distance if distance >= 0.01 else Vector2.ZERO
-			if _wallpaper:
-				var previous: Vector2 = view.get("walk_travel", Vector2.ZERO)
-				view.stride_starts = previous == Vector2.ZERO or not view.get("stride_continues", false) \
-					or previous.dot(travel) < 0.0
-				view.stride_continues = worker.remaining_distance > 0.0 \
-					and travel.dot(screen_point(direction)) >= 0.0
-			if _wallpaper and snap and transferring:
+			var previous: Vector2 = view.get("walk_travel", Vector2.ZERO)
+			view.stride_starts = previous == Vector2.ZERO or not view.get("stride_continues", false) \
+				or previous.dot(travel) < 0.0
+			view.stride_continues = worker.remaining_distance > 0.0 \
+				and travel.dot(screen_point(direction)) >= 0.0
+			if snap and transferring:
 				var saved: Variant = transfer_facing.get(str(id))
 				if (saved is float or saved is int) and saved in [-1.0, 1.0]:
 					view.facing = float(saved)
@@ -509,7 +473,7 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 				var tow_direction := screen_point(direction).normalized() if snap else travel
 				if not is_zero_approx(tow_direction.x):
 					view.tow_direction = tow_direction
-			view.use_walker = _wallpaper and id != Owner.DRESSER and not mining and not placing_here
+			view.use_walker = id != Owner.DRESSER and not mining and not placing_here
 			view.walking = worker.remaining_distance > 0.0
 			view.empty_idle = id != Owner.DRESSER and count == 0 and worker.fsm_state in [&"idle", &"exhausted"]
 		var body: Sprite2D = view.body
@@ -527,7 +491,7 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 				strike_left if mining else view.facing < 0.0)
 		elif placing_here or transferring:
 			_set_worker_frame(body, BUILDER_PLACE, BUILDER_PLACE_FEET, false)
-		elif id == Owner.MINER or not _wallpaper and id != Owner.LIFT:
+		elif id == Owner.MINER:
 			body.texture = _art[WORKER_ART.get(id, "porter")]
 			body.scale = Vector2.ONE
 			body.offset = Vector2(0, -56)
@@ -642,8 +606,7 @@ func _sync_porter_transfer(state: State, id: int, view: Dictionary, ready_stones
 	if snap or not same_transfer:
 		view.sled.rotation = 0.0
 		view.sled.position = Vector2(-view.facing * PORTER_SLED_DISTANCE, 0)
-		if _wallpaper:
-			view.sled.flip_h = view.facing < 0.0
+		view.sled.flip_h = view.facing < 0.0
 	view.transfer_before = progress if snap else (view.transfer_after if same_transfer else 0.0)
 	view.transfer_after = progress
 	view.transfer_id = resource_id
@@ -718,7 +681,7 @@ func render_frame(fraction: float, game_seconds: float) -> void:
 	_mast.scale.y = (lift_base.y - _pulley.position.y) / 64.0
 	var deck_y := point.y - (_brick_height if _row > 0 else 0.0)
 	_deck.visible = _row > 0 and (not _finished or _pyramid_ramp != null) and not _rebuilding
-	var deck_start := point.x - (124.0 if _wallpaper else 0.0)
+	var deck_start := point.x - (124.0)
 	if _pyramid_ramp != null:
 		var entry := screen_point(_geometry.pyramid_deck_entry(_row))
 		deck_start = entry.x
@@ -762,10 +725,9 @@ func render_frame(fraction: float, game_seconds: float) -> void:
 		if view.has("sled") and view.sled.visible and not transferring:
 			pulling = id != Owner.BUILDER or view.ground_haul or root.position.y <= deck_y + 0.5
 		if walker != null:
-			var crank_arrival_tolerance := 0.1 if _wallpaper else 2.0
+			var crank_arrival_tolerance := 0.1
 			var at_crank: bool = view.cranking and root.position.distance_to(view.after) < crank_arrival_tolerance
-			if _wallpaper:
-				root.position.x += lerpf(view.crank_shift_before, view.crank_shift_after, fraction)
+			root.position.x += lerpf(view.crank_shift_before, view.crank_shift_after, fraction)
 			var travel: Vector2 = view.walk_travel
 			if id == Owner.BUILDER and _pyramid_ramp != null and travel != Vector2.ZERO:
 				var tangent := screen_point(_geometry.pyramid_ramp_step()).normalized()
@@ -782,12 +744,12 @@ func render_frame(fraction: float, game_seconds: float) -> void:
 			view.body.visible = not walker.visible
 			if walker.visible:
 				if at_crank:
-					walker.grip_crank(_crank_grip.global_position, _wallpaper)
+					walker.grip_crank(_crank_grip.global_position, true)
 				elif resting:
 					walker.pose_idle(animation_seconds + id * 0.81, view.facing)
 				else:
 					var stride_weight := 1.0
-					if _wallpaper and in_step:
+					if in_step:
 						if view.stride_starts:
 							stride_weight = smoothstep(0.0, 1.0, fraction)
 						if not view.stride_continues:
@@ -812,13 +774,11 @@ func render_frame(fraction: float, game_seconds: float) -> void:
 			_render_porter_transfer(view, fraction)
 		elif view.has("transfer_item"):
 			view.transfer_item.hide()
-		if id == selected_worker_id:
-			_selection.position = root.position
 		if id == Owner.LIFT:
 			var loaded: bool = view.items[0].visible
 			_rope.visible = loaded
 			view.body.visible = loaded and _upper_cable == null
-			var rope_end := root.position + Vector2(0, -9 if _wallpaper else -13)
+			var rope_end := root.position + Vector2(0, -9)
 			if _upper_cable != null:
 				_pulley.position.x = maxf(lift_base.x, root.position.x)
 				rope_end = root.position - Vector2(0, _brick_height)
@@ -848,8 +808,7 @@ func _update_sled(id: int, view: Dictionary, pulling: bool, walker: WorkerWalk) 
 	var direction: Vector2 = view.tow_direction if pulling else Vector2(view.facing, 0)
 	var facing := signf(direction.x)
 	sled.position = -direction * distance
-	if _wallpaper:
-		sled.flip_h = facing < 0.0
+	sled.flip_h = facing < 0.0
 	# The sled stays upright when the carrier heads left.
 	sled.rotation = (direction * facing).angle()
 	if not tether.visible:
@@ -865,7 +824,7 @@ func _update_sled(id: int, view: Dictionary, pulling: bool, walker: WorkerWalk) 
 		sled.rotation = Vector2(2.0 * reach, right_y - left_y).angle()
 	elif not route.is_empty():
 		_fit_sled_to_route(sled, route, view.tow_segment, view.root.position.x, facing, distance)
-	var hitch_offset := WALLPAPER_SLED_HITCH if _wallpaper else SLED_HITCH
+	var hitch_offset := WALLPAPER_SLED_HITCH
 	var hitch := sled.position + Vector2(facing * hitch_offset.x, hitch_offset.y).rotated(sled.rotation)
 	var hand := walker.hand_position if walker.visible else Vector2(-view.facing * 22, -37)
 	tether.set_point_position(0, hand)
@@ -915,9 +874,9 @@ func play_production(events: Array[Dictionary]) -> void:
 			&"mine":
 				if not event.has("resource_id"):
 					continue
-				effect = &"dust" if _wallpaper else &"stone_chip"
+				effect = &"dust"
 			&"process_brick":
-				effect = &"dust" if _wallpaper else &"stone_chip"
+				effect = &"dust"
 			_:
 				continue
 		var sprite := _effects[effect]
@@ -940,35 +899,11 @@ func play_production(events: Array[Dictionary]) -> void:
 		tween.chain().tween_callback(sprite.hide)
 
 
-func select_worker_at(point: Vector2) -> void:
-	var best := -1
-	var nearest := INF
-	for id in _views:
-		var view := _views[id]
-		var body: Sprite2D = view.body
-		var walker: WorkerWalk = view.get("walker")
-		var center := body.get_global_transform_with_canvas() * body.offset
-		if walker != null and walker.visible:
-			center = walker.get_global_transform_with_canvas() * Vector2(0, -48)
-		elif view.get("transferring", false):
-			center = body.get_global_transform_with_canvas() * Vector2(0, -48)
-		var distance := point.distance_squared_to(center)
-		var radius := maxf(24.0, 52.0 * $Camera2D.zoom.x)
-		if distance <= radius * radius and distance < nearest:
-			best = id
-			nearest = distance
-	selected_worker_id = best
-	_selection.visible = best >= 0
-	if best >= 0:
-		_selection.position = _views[best].root.position
-	worker_selected.emit(best)
-
-
 func _create_worker(id: int) -> Dictionary:
 	var root := Node2D.new()
 	workers.add_child(root)
 	var body: Sprite2D
-	if _wallpaper and id != Owner.LIFT:
+	if id != Owner.LIFT:
 		body = Sprite2D.new()
 		root.add_child(body)
 	else:
@@ -983,12 +918,12 @@ func _create_worker(id: int) -> Dictionary:
 		view.rest_material = rest_material
 	if id != Owner.LIFT:
 		var walker := WorkerWalk.new()
-		walker.planted_stance = _wallpaper
+		walker.planted_stance = true
 		walker.scale = Vector2.ONE * WORKER_FRAME_SCALE
 		root.add_child(walker)
 		view.walker = walker
 		view.walk_end = 0.5
-	if id >= Owner.FIRST_PORTER or (_wallpaper and id in [Owner.BUILDER, Owner.MINER]):
+	if id >= Owner.FIRST_PORTER or (id in [Owner.BUILDER, Owner.MINER]):
 		var tether := Line2D.new()
 		tether.width = 3
 		tether.default_color = Color("#694b35")
@@ -1014,7 +949,7 @@ func _create_worker(id: int) -> Dictionary:
 				@warning_ignore("integer_division")
 				var row := i / PORTER_SLED_COLUMNS
 				var column := i % PORTER_SLED_COLUMNS
-				var base_y := -74.0 if _wallpaper else -54.0
+				var base_y := -74.0
 				stone.position = Vector2((column - 1) * PORTER_SLED_COLUMN_SPACING,
 					base_y - row * PORTER_SLED_ROW_RISE)
 				if id == Owner.MINER:
@@ -1028,7 +963,7 @@ func _create_worker(id: int) -> Dictionary:
 		var item := _sprite("stone" if id in [Owner.MINER, Owner.DRESSER] else "brick", root)
 		item.position = Vector2(24, -43)
 		if id == Owner.LIFT:
-			item.position = Vector2(0, -23 if _wallpaper else -15)
+			item.position = Vector2(0, -23)
 			if _geometry.has_upper_delivery():
 				item.position = Vector2(0, -14)
 		if id == Owner.BUILDER:
@@ -1065,31 +1000,15 @@ func _winch_line(parent: Node2D, points: PackedVector2Array, width: float, color
 
 func _create_terraces(rect: Rect2) -> void:
 	_foreground_rect = rect
-	var back := _sand_polygon(Color.WHITE if _wallpaper else Color("#a59dba"), -7)
-	if not _wallpaper:
-		back.texture = GAME_SAND
+	var back := _sand_polygon(Color.WHITE, -7)
 	var back_rect := Rect2(rect.position.x, 0, rect.size.x, rect.position.y + 3)
 	var back_outline := PackedVector2Array([
 		back_rect.position, Vector2(back_rect.end.x, 0), back_rect.end,
 		Vector2(back_rect.position.x, back_rect.end.y),
 	])
-	if _wallpaper:
-		_set_sand_outline(back, back_outline)
-	else:
-		back.polygon = back_outline
-		back.uv = PackedVector2Array([Vector2.ZERO, Vector2(GAME_SAND.get_width(), 0),
-			GAME_SAND.get_size(), Vector2(0, GAME_SAND.get_height())])
-		var edge_texture := preload("res://assets/sprites/ground_edge.png")
-		var edge := Sprite2D.new()
-		edge.texture = edge_texture
-		edge.centered = false
-		edge.position.x = back_rect.position.x
-		edge.scale = Vector2(back_rect.size.x, 22) / edge_texture.get_size()
-		edge.modulate = Color("#c39f9f")
-		edge.z_index = -6
-		add_child(edge)
+	_set_sand_outline(back, back_outline)
 	_quarry_cut = _sand_polygon(Color("#685248"), -6)
-	_foreground = _sand_polygon(Color("#d3c0aa") if _wallpaper else Color("#b28872"), -5)
+	_foreground = _sand_polygon(Color("#d3c0aa"), -5)
 	_quarry_rim = Line2D.new()
 	_quarry_rim.width = 2.0
 	_quarry_rim.default_color = Color("#b39473")
@@ -1186,28 +1105,6 @@ func _prop(name: String, point: Vector2) -> Sprite2D:
 	sprite.offset.y = -sprite.texture.get_height() * 0.5
 	return sprite
 
-
-func _rectangle(name: String, rect: Rect2, depth: int) -> Sprite2D:
-	var sprite := _sprite(name, self)
-	sprite.position = rect.get_center()
-	sprite.scale = rect.size / sprite.texture.get_size()
-	sprite.z_index = depth
-	return sprite
-
-
-
-func _create_dunes(landscape_left: float, landscape_width: float) -> void:
-	var dunes := _rectangle("dunes", Rect2(landscape_left, -540, landscape_width, 540), -9)
-	var fade := Shader.new()
-	fade.code = """
-shader_type canvas_item;
-void fragment() {
-	COLOR.a *= smoothstep(0.0, 0.65, UV.y);
-}
-"""
-	var dunes_material := ShaderMaterial.new()
-	dunes_material.shader = fade
-	dunes.material = dunes_material
 
 func _create_sky() -> void:
 	_sky_material = ShaderMaterial.new()

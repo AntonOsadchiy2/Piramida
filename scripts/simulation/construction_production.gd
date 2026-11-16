@@ -1,11 +1,9 @@
 extends RefCounted
 
 const State = preload("res://scripts/domain/game_state.gd")
-const Economy = preload("res://scripts/simulation/economy_system.gd")
 const Owner = State.Owner
 
 var _state: State
-var _economy: Economy
 var _process_seconds: float
 var _place_seconds: float
 var _unload_seconds: float
@@ -14,9 +12,8 @@ var _miner_speed: float
 var _porter_speed: float
 
 
-func _init(state: State, balance: Dictionary, economy: Economy) -> void:
+func _init(state: State, balance: Dictionary) -> void:
 	_state = state
-	_economy = economy
 	_process_seconds = float(balance.workers.dresser.processSeconds)
 	_place_seconds = float(balance.workers.builder.placeSeconds)
 	_unload_seconds = float(balance.workers.porter.unloadSeconds)
@@ -85,7 +82,6 @@ func apply_completion(event: Dictionary) -> void:
 				if row_complete:
 					_state.completed_rows += 1
 				_state.finished = _state.placed_count() == State.RESOURCE_COUNT
-				_economy.credit_placement(_state, row_complete)
 				var builder := _state.worker(Owner.BUILDER)
 				if not _state.finished and builder.fsm_state == &"idle":
 					var column := placement_index - _state.row_start

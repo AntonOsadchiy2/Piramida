@@ -10,10 +10,8 @@ config_version=5
 
 [application]
 
-config/name="Пирамида: камень за камнем"
-run/main_scene="res://scenes/main.tscn"
-run/main_scene.wallpaper="res://scenes/wallpaper.tscn"
-config/name.wallpaper="Пирамида"
+config/name="Пирамида"
+run/main_scene="res://scenes/wallpaper.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 
 [display]
@@ -26,6 +24,4 @@ window/stretch/aspect="expand"
 [rendering]
 
 renderer/rendering_method="gl_compatibility"
-renderer/rendering_method.mobile="gl_compatibility"
-textures/vram_compression/import_etc2_astc=true
 environment/defaults/default_clear_color=Color(0.88, 0.8, 0.66, 1)

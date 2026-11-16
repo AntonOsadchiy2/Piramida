@@ -27,6 +27,7 @@ if (Test-Path -LiteralPath $piramidaGodot -PathType Leaf) {
 
 | Дата | Команда или сценарий | Результат |
 |---|---|---|
+| 16 ноября 2026, удаление Android | Чистый импорт, `tests/wallpaper_cycles.gd`, OpenGL `--verify-transfer-resume`, сборка EXE из чистой копии и `--verify-wallpaper-cycles` | Код 0 во всех прогонах. Два цикла по 900 кирпичей, паузы 5 с, миграции и ручная передача сохранены. |
 | 16 ноября 2026 | `--headless --path . --script res://tests/wallpaper_cycles.gd` | Два цикла по 900 кирпичей и пауза 5 с перед каждым сбросом. SHA-256 контрольных `save.json` и `save.json.bak` совпали до и после прогона. |
 | 16 ноября 2026 | Свежий экспорт Windows Wallpaper, `Piramida.exe --headless -- --verify-wallpaper-cycles` | Два полных цикла и обе паузы по 5 с. SHA-256 контрольных `save.json` и `save.json.bak` совпали до и после прогона. |
 | 15 ноября 2026 | `--headless --path . --script res://tools/check-giza-sky.gd` | Восемь сверок для Гизы и проверка кульминации Сириуса. Максимальные отклонения по паре азимут–высота 0,0127° для Солнца и 0,2098° для Луны. |
@@ -50,7 +51,7 @@ try {
 }
 ```
 
-Команда явно загружает тест Windows-обоев. При прямом запуске указывайте `res://scenes/wallpaper.tscn`, поскольку основной сценой проекта остаётся замороженная мобильная ветка. Для проверки EXE используйте тот же блок с выделенным `APPDATA`, запустите `Start-Process -FilePath $piramidaExe -ArgumentList @('--headless', '--log-file', ('"{0}"' -f $piramidaLog), '--', '--verify-wallpaper-cycles') -WindowStyle Hidden -PassThru -Wait` и проверьте свойство `ExitCode` и журнал. Переменная `$piramidaExe` должна содержать полный путь к проверяемой сборке. Для длительности кадров, GPU, памяти и привязки к Explorer нужны отдельные проверки рабочего стола.
+Команда явно загружает тест Windows-обоев. Основная сцена проекта — `res://scenes/wallpaper.tscn`; её можно запускать через F5. Для проверки EXE используйте тот же блок с выделенным `APPDATA`, запустите `Start-Process -FilePath $piramidaExe -ArgumentList @('--headless', '--log-file', ('"{0}"' -f $piramidaLog), '--', '--verify-wallpaper-cycles') -WindowStyle Hidden -PassThru -Wait` и проверьте свойство `ExitCode` и журнал. Переменная `$piramidaExe` должна содержать полный путь к проверяемой сборке. Для длительности кадров, GPU, памяти и привязки к Explorer нужны отдельные проверки рабочего стола.
 
 ## Живые обои Windows x64
 

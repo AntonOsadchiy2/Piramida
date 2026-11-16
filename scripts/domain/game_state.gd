@@ -17,7 +17,7 @@ class TransferTask:
 
 
 var geometry: Geometry
-var currency: int
+var currency: int # Retained for compatibility with existing wallpaper snapshots.
 var upgrade_levels: Dictionary[String, int] = {}
 var porter_count: int = 0
 var _porter_limit: int
@@ -37,11 +37,9 @@ var _workers: Dictionary[int, Worker] = {}
 var _tasks: Dictionary[int, TransferTask] = {}
 
 
-func _init(balance: Dictionary, economy_enabled: bool = true) -> void:
+func _init(balance: Dictionary) -> void:
 	geometry = Geometry.new(balance)
 	porter_capacity = clampi(int(balance.workers.porter.get("capacity", 1)), 1, MAX_PORTER_CAPACITY)
-	if economy_enabled:
-		currency = int(balance.economy.startCoins)
 	var storages: Dictionary = balance.storages
 	_capacities = {
 		Owner.UNMINED: RESOURCE_COUNT,
@@ -68,7 +66,7 @@ func _init(balance: Dictionary, economy_enabled: bool = true) -> void:
 	for worker_id in [Owner.DRESSER, Owner.LIFT, Owner.BUILDER]:
 		_stocks[worker_id] = []
 		_capacities[worker_id] = 1
-	_porter_limit = clampi(int(balance.workers.porter.maxCount), 1, 8) if economy_enabled else 1
+	_porter_limit = 1
 	for index in range(clampi(int(balance.workers.porter.count), 1, _porter_limit)):
 		add_porter()
 

@@ -6,11 +6,8 @@ const QuarryProduction = preload("res://scripts/simulation/quarry_production.gd"
 
 const ConstructionProduction = preload("res://scripts/simulation/construction_production.gd")
 
-const Economy = preload("res://scripts/simulation/economy_system.gd")
-const WALLPAPER_ECONOMY_ENABLED := false
 
 var state: State
-var economy: Economy
 var _step_seconds: float
 var _tick: int = 0
 var _last_completion_tick: int = 0
@@ -19,16 +16,15 @@ var _construction: ConstructionProduction
 
 
 static func for_wallpaper(balance: Dictionary) -> RefCounted:
-	return new(balance, true, WALLPAPER_ECONOMY_ENABLED)
+	return new(balance)
 
 
-func _init(balance: Dictionary, run_production: bool = true, economy_enabled: bool = true) -> void:
-	state = State.new(balance, economy_enabled)
-	economy = Economy.new(balance, economy_enabled)
+func _init(balance: Dictionary, run_production: bool = true) -> void:
+	state = State.new(balance)
 	_step_seconds = float(balance.simulation.fixedStepSeconds)
 	if run_production:
 		_production = QuarryProduction.new(state, balance.workers)
-		_construction = ConstructionProduction.new(state, balance, economy)
+		_construction = ConstructionProduction.new(state, balance)
 		_production.assign_tasks()
 
 
@@ -124,19 +120,19 @@ func to_dict() -> Dictionary:
 
 
 # Populate the candidate before attaching production systems.
-static func from_dict(balance: Dictionary, data: Dictionary, economy_enabled: bool = true) -> RefCounted:
+static func from_dict(balance: Dictionary, data: Dictionary) -> RefCounted:
 	if not Values.integer(data.get("tick"), 9007199254740991) \
 			or not Values.integer(data.get("last_completion_tick"), int(data.tick)) \
 			or Values.decode_real(data.get("step_seconds")) != float(balance.simulation.fixedStepSeconds) \
 			or not data.get("workers") is Array or not data.get("model") is Dictionary:
 		return null
-	var candidate := new(balance, false, economy_enabled)
+	var candidate := new(balance, false)
 	if not candidate.state.restore_snapshot(data.model, data.workers, balance):
 		return null
 	candidate._tick = int(data.tick)
 	candidate._last_completion_tick = int(data.last_completion_tick)
 	candidate._production = QuarryProduction.new(candidate.state, balance.workers)
-	candidate._construction = ConstructionProduction.new(candidate.state, balance, candidate.economy)
+	candidate._construction = ConstructionProduction.new(candidate.state, balance)
 	return candidate
 
 

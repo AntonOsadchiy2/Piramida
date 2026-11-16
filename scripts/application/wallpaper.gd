@@ -64,7 +64,7 @@ func _ready() -> void:
 			get_tree().quit(1)
 			return
 		save_path = _temporary_save_dir.get_current_dir().path_join("save.json")
-	_save_service = SaveService.new(_balance, save_path, Simulation.WALLPAPER_ECONOMY_ENABLED)
+	_save_service = SaveService.new(_balance, save_path)
 	_step = float(_balance.simulation.fixedStepSeconds)
 	_light = CanvasModulate.new()
 	add_child(_light)

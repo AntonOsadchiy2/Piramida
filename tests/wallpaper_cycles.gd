@@ -41,7 +41,7 @@ func _check_transfer_resume(wallpaper, id: int, legacy: bool = false) -> void:
 	var item_position: Vector2 = view.transfer_item.global_position
 	var sled_offset: Vector2 = view.sled.global_position - view.root.global_position
 	var path: String = wallpaper._temporary_save_dir.get_current_dir().path_join("transfer.json")
-	var service := SaveService.new(wallpaper._balance, path, Simulation.WALLPAPER_ECONOMY_ENABLED)
+	var service := SaveService.new(wallpaper._balance, path)
 	if legacy:
 		_check(service.save_game(simulation) == OK, "Write a snapshot without transfer facing")
 	else:
@@ -513,7 +513,7 @@ func _check_saved_trip(wallpaper: Node2D, path: String) -> void:
 		if state.placed_count() > 0:
 			for game in restored:
 				_check(game.state.currency == 0 and game.state.porter_count == 1 and game.state.porter_capacity == 8
-					and not game.state.can_add_porter() and game.economy.next_price(game.state, "MINER_SPEED") < 0,
+					and not game.state.can_add_porter(),
 					"Wallpaper still has no economy or extra porter after a placement")
 			print("Wallpaper trip: %.1f s, remaining segment %.9f, reserved %s, first brick %d at %.1f s"
 				% [saved_at, remaining, pending, state.stock(State.Owner.PLACED)[0], continuous.elapsed_seconds()])
@@ -526,8 +526,8 @@ func _check_quarry_save_migration(balance: Dictionary, path: String) -> void:
 	previous.world.erase("quarrySlopesOnly")
 	previous.world.erase("pyramidRamp")
 	var legacy := Simulation.for_wallpaper(previous) as Simulation
-	var old_service := SaveService.new(previous, path, Simulation.WALLPAPER_ECONOMY_ENABLED)
-	var new_service := SaveService.new(balance, path, Simulation.WALLPAPER_ECONOMY_ENABLED)
+	var old_service := SaveService.new(previous, path)
+	var new_service := SaveService.new(balance, path)
 	var cases := {}
 	for tick in range(2000):
 		legacy.step_simulation()
@@ -572,9 +572,9 @@ func _check_pyramid_save_migration(balance: Dictionary, path: String) -> void:
 	previous.world.erase("pyramidRamp")
 	var legacy := Simulation.for_wallpaper(previous) as Simulation
 	# Older wallpaper restores could credit a placement. Keep the stored amount through migration.
-	legacy.state.currency = int(previous.economy.coinsPerBrick)
-	var old_service := SaveService.new(previous, path, Simulation.WALLPAPER_ECONOMY_ENABLED)
-	var new_service := SaveService.new(balance, path, Simulation.WALLPAPER_ECONOMY_ENABLED)
+	legacy.state.currency = 10 # Historical wallpaper snapshot with a credited brick.
+	var old_service := SaveService.new(previous, path)
+	var new_service := SaveService.new(balance, path)
 	var pending := [&"climb_to_platform", &"walk_to_lift", &"return_from_lift",
 		&"walk_to_workshop", &"walk_to_brick", &"return_to_platform", &"place_brick", &"operate_lift"]
 	while not legacy.state.finished and legacy.elapsed_seconds() < 40000.0:
@@ -617,7 +617,7 @@ func _check_pyramid_save_migration(balance: Dictionary, path: String) -> void:
 		else:
 			_check(after.position == before.position, "Migration preserves the work position in %s" % phase)
 		# Use a separate destination so the legacy producer can keep writing v9.
-		var current_service := SaveService.new(balance, path + ".current", Simulation.WALLPAPER_ECONOMY_ENABLED)
+		var current_service := SaveService.new(balance, path + ".current")
 		_check(current_service.save_game(restored) == OK, "Write the current pyramid phase")
 		var current := current_service.load_game()
 		_check(current.status == SaveService.Status.OK, "Read the current pyramid phase")

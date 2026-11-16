@@ -8,3 +8,13 @@
 *.jks
 *.p12
 *.pfx
+
+# Local editor state and nested empty clone
+.vs/
+.vscode/
+.idea/
+/Piramida/
+
+# Temporary Windows build payloads
+/assets/wallpaper/desktop-extension.txt
+/assets/wallpaper/desktop-notices.txt
