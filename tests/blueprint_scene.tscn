@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cxmb225cc8iew"]
+
+[ext_resource type="Script" path="res://tests/blueprint_scene.gd" id="1_yey6m"]
+
+[node name="BlueprintSceneTest" type="Node" unique_id=200825550]
+script = ExtResource("1_yey6m")

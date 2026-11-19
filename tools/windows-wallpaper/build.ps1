@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$Godot)
+param([Parameter(Mandatory)][string]$Godot, [string]$OutputName = 'Piramida.exe')
 $ErrorActionPreference = 'Stop'
 $project = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $Godot = (Get-Command $Godot -CommandType Application).Source
@@ -21,7 +21,7 @@ try {
         [IO.File]::ReadAllBytes((Join-Path $temp 'DesktopExtension.dll'))))
     & $Godot --headless --path $project --script res://tools/windows-wallpaper/write-notices.gd -- $notices
     if ($LASTEXITCODE) { throw 'Could not write Godot notices.' }
-    $exe = Join-Path $out 'Piramida.exe'
+    $exe = Join-Path $out $OutputName
     $candidate = Join-Path $temp.FullName 'Piramida.exe'
     & $Godot --headless --path $project --export-release 'Windows Wallpaper' $candidate
     if ($LASTEXITCODE -or !(Test-Path -LiteralPath $candidate -PathType Leaf)) {

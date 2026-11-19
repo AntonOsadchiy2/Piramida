@@ -4,10 +4,10 @@
 
 Для проверок используйте консольную сборку Godot 4.7.2 stable для Windows x64. Пустой вывод `Get-Command godot` означает, что команда недоступна по этому имени. Распакованный редактор обычно запускается по полному пути.
 
-На рабочем ПК «Пирамиды» проверен следующий путь. Выполните в PowerShell.
+Консольный EXE лежит рядом с редактором в корне проекта. Выполните в PowerShell из корня проекта.
 
 ```powershell
-$piramidaGodot = Join-Path $env:TEMP 'piramida-godot-task05/Godot_v4.7.2-stable_win64_console.exe'
+$piramidaGodot = Join-Path (Get-Location).Path 'Godot_v4.7.2-stable_win64_console.exe'
 if (Test-Path -LiteralPath $piramidaGodot -PathType Leaf) {
     & $piramidaGodot --version
 }

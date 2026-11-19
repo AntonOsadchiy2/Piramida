@@ -77,11 +77,16 @@ func _check_transfer_resume(wallpaper, id: int, legacy: bool = false) -> void:
 	_check(resumed.simulation.to_dict() == simulation.to_dict()
 		and restored.fsm_state == worker.fsm_state and restored.remaining_work == worker.remaining_work
 		and restored.movement_route().is_empty(), "Restore exact simulation at " + label)
-	_check(next.transferring and next.transfer_item.visible and next.transfer_after == view.transfer_after
-		and next.transfer_id == view.transfer_id and next.transfer_ground.is_equal_approx(view.transfer_ground)
-		and next.facing == view.facing and next.sled.flip_h == view.sled.flip_h
-		and next_offset.is_equal_approx(sled_offset) and next_item.is_equal_approx(item_position),
-		"Restore sled and hand-carried piece at " + label)
+	var transfer_restored: bool = next.transferring and next.transfer_item.visible \
+		and next.transfer_after == view.transfer_after and next.transfer_id == view.transfer_id \
+		and next.transfer_ground.is_equal_approx(view.transfer_ground)
+	# A snapshot without wallpaperTransferFacing cannot reconstruct the approach side
+	# after the warehouse route changes; current snapshots must preserve it exactly.
+	if not legacy:
+		transfer_restored = transfer_restored and next.facing == view.facing \
+			and next.sled.flip_h == view.sled.flip_h \
+			and next_offset.is_equal_approx(sled_offset) and next_item.is_equal_approx(item_position)
+	_check(transfer_restored, "Restore sled and hand-carried piece at " + label)
 	resumed.free()
 	var camera: Camera2D = wallpaper.world.get_node("Camera2D")
 	camera.make_current()
@@ -207,7 +212,6 @@ func _run() -> void:
 		while not wallpaper.simulation.state.finished and wallpaper.simulation.elapsed_seconds() < 40000.0:
 			var before: int = wallpaper.simulation.state.placed_count()
 			var deck: Sprite2D = wallpaper.world._deck
-			var deck_edge_before := deck.position.x + deck.texture.get_width() * deck.scale.x * 0.5
 			var brick: Sprite2D = wallpaper.world._placing_brick
 			var aligned := false
 			if brick.visible:
@@ -323,18 +327,14 @@ func _run() -> void:
 				else:
 					var builder := state.worker(BUILDER)
 					var route := builder.movement_route()
-					var endpoint := state.geometry.builder_to_brick(state.current_row, column)[-1]
 					if not state.finished:
 						_check(builder.fsm_state == &"return_to_platform" and not route.is_empty(),
 							"Builder starts the return at " + label)
 						if not route.is_empty():
-							endpoint = route[0]
-					var expected: float = wallpaper.world.screen_point(endpoint).x
-					var deck_edge := deck.position.x + deck.texture.get_width() * deck.scale.x * 0.5
-					_check(deck.visible and absf(deck_edge_before - expected) < 0.01
-						and absf(deck_edge - expected) < 0.01,
-						"Deck edge before/after placement: %.2f / %.2f, expected %.2f at %s"
-						% [deck_edge_before, deck_edge, expected, label])
+							_check(route[0].is_equal_approx(builder.position),
+								"Return starts at the placed surface at " + label)
+					_check(not deck.visible and (state.finished or wallpaper.world._scaffold_root.visible),
+						"Placed sections replace the old deck at " + label)
 				var cell: Vector2i = wallpaper.world._brick_cells[before]
 				var builder_view: Dictionary = wallpaper.world._views[BUILDER]
 				_check(wallpaper.simulation.state.stock_count(BUILDER) == 0 and not builder_view.items[0].visible,
@@ -873,12 +873,12 @@ func _check_sled_slope(world: Node) -> void:
 			and rope.get_point_position(1).is_equal_approx(hitch),
 			"Sled and rope follow the slope in both directions")
 	var ascent := PackedVector2Array([Vector2(0, -2), Vector2(4, 0), Vector2(8, 0)])
-	world._fit_sled_to_route(sled, ascent, 1, 430.0, 1.0, world.PORTER_SLED_DISTANCE)
+	world._fit_sled_to_route(sled, ascent, 1, Vector2(430.0, 0.0), 1.0, world.PORTER_SLED_DISTANCE)
 	_check(is_equal_approx(sled.rotation, -atan(0.5)) and sled.position.y > 0.0,
 		"Sled still follows the ascent when the porter reaches level ground")
-	world._fit_sled_to_route(sled, ascent, 1, 600.0, 1.0, world.PORTER_SLED_DISTANCE)
-	_check(is_zero_approx(sled.rotation) and is_zero_approx(sled.position.y),
-		"Sled levels out after both runners leave the slope")
+	world._fit_sled_to_route(sled, ascent, 1, Vector2(600.0, 0.0), 1.0, world.PORTER_SLED_DISTANCE)
+	_check(is_zero_approx(sled.rotation) and sled.position.y <= 0.0,
+		"Sled levels out above the surface after both runners leave the slope")
 	view.tow_direction = Vector2.RIGHT
 	world._update_sled(PORTER, view, false, view.walker)
 
@@ -891,7 +891,11 @@ func _scene_counts(wallpaper: Node) -> Array:
 
 
 func _placed_tiles(layer: TileMapLayer) -> int:
-	return layer.get_used_cells_by_id(0, Vector2i.ZERO, 0).size()
+	var count := 0
+	for cell in layer.get_used_cells():
+		if layer.get_cell_alternative_tile(cell) == 0:
+			count += 1
+	return count
 
 
 func _check_window_size(wallpaper: Node, size: Vector2i) -> void:

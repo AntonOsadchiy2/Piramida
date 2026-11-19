@@ -25,3 +25,7 @@ window/stretch/aspect="expand"
 
 renderer/rendering_method="gl_compatibility"
 environment/defaults/default_clear_color=Color(0.88, 0.8, 0.66, 1)
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")

@@ -14,6 +14,15 @@ NOTIFYICONDATAW tray_icon{};
 constexpr UINT WM_TRAY = WM_APP + 1;
 constexpr UINT MENU_CLOSE = 1001;
 constexpr UINT MENU_STARTUP = 1002;
+constexpr UINT MENU_RELOAD = 1003;
+constexpr UINT MENU_OPEN_PANEL = 1004;
+constexpr UINT MENU_RESET_PROGRESS = 1005;
+constexpr UINT MENU_SPEED_1 = 1011;
+constexpr UINT MENU_SPEED_4 = 1012;
+constexpr UINT MENU_SPEED_8 = 1013;
+constexpr UINT MENU_SPEED_16 = 1014;
+constexpr UINT MENU_SPEED_32 = 1015;
+int selected_time_scale = 1;
 
 constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kRunValue[] = L"PiramidaWallpaper";
@@ -93,9 +102,123 @@ bool set_startup(bool enabled) {
     return success;
 }
 
+void request_panel_action(const wchar_t* filename, bool reset_progress = false) {
+    DWORD capacity = GetEnvironmentVariableW(L"APPDATA", nullptr, 0);
+    if (!capacity) return;
+    std::wstring appdata(capacity, L'\0');
+    DWORD length = GetEnvironmentVariableW(L"APPDATA", &appdata[0], capacity);
+    if (!length || length >= capacity) return;
+    appdata.resize(length);
+    std::wstring request = appdata + L"\\Godot\\app_userdata\\Пирамида\\wallpaper\\" + filename;
+    HANDLE file = CreateFileW(request.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        MessageBoxW(tray_window, L"Не удалось передать команду панели в приложение.",
+            L"Пирамида", MB_OK | MB_ICONERROR);
+        return;
+    }
+    if (reset_progress) {
+        const std::string request_id = std::to_string(GetTickCount64());
+        DWORD written = 0;
+        if (!WriteFile(file, request_id.data(), static_cast<DWORD>(request_id.size()), &written, nullptr)
+            || written != request_id.size()) {
+            CloseHandle(file);
+            DeleteFileW(request.c_str());
+            MessageBoxW(tray_window, L"Не удалось передать команду сброса в приложение.",
+                L"Пирамида", MB_OK | MB_ICONERROR);
+            return;
+        }
+    }
+    CloseHandle(file);
+}
+
+bool time_scale_path(std::wstring& path, const wchar_t* filename) {
+    DWORD capacity = GetEnvironmentVariableW(L"APPDATA", nullptr, 0);
+    if (!capacity) return false;
+    std::wstring appdata(capacity, L'\0');
+    DWORD length = GetEnvironmentVariableW(L"APPDATA", &appdata[0], capacity);
+    if (!length || length >= capacity) return false;
+    appdata.resize(length);
+    path = appdata + L"\\Godot\\app_userdata\\Пирамида\\wallpaper\\" + filename;
+    return true;
+}
+
+bool valid_time_scale(int value) {
+    return value == 1 || value == 4 || value == 8 || value == 16 || value == 32;
+}
+
+int load_time_scale() {
+    std::wstring path;
+    if (!time_scale_path(path, L"time-scale.txt")) return 1;
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return 1;
+    char buffer[16]{};
+    DWORD read = 0;
+    bool success = ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr) != FALSE;
+    CloseHandle(file);
+    if (!success) return 1;
+    int value = 0;
+    for (DWORD index = 0; index < read; ++index) {
+        if (buffer[index] < '0' || buffer[index] > '9') return 1;
+        value = value * 10 + buffer[index] - '0';
+    }
+    return valid_time_scale(value) ? value : 1;
+}
+
+bool save_time_scale(int value) {
+    if (!valid_time_scale(value)) return false;
+    std::wstring path;
+    std::wstring temporary;
+    if (!time_scale_path(path, L"time-scale.txt")
+        || !time_scale_path(temporary, L"time-scale.tmp")) return false;
+    HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    const std::string text = std::to_string(value);
+    DWORD written = 0;
+    bool success = WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr)
+        && written == text.size();
+    CloseHandle(file);
+    if (success) success = MoveFileExW(temporary.c_str(), path.c_str(),
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+    if (!success) DeleteFileW(temporary.c_str());
+    return success;
+}
+
+void select_time_scale(int value) {
+    if (save_time_scale(value)) {
+        selected_time_scale = value;
+        return;
+    }
+    MessageBoxW(tray_window, L"Не удалось сохранить скорость стройки.",
+        L"Пирамида", MB_OK | MB_ICONERROR);
+}
+
 void show_tray_menu() {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
+    HMENU speed_menu = CreatePopupMenu();
+    if (!speed_menu) { DestroyMenu(menu); return; }
+    AppendMenuW(menu, MF_STRING, MENU_RELOAD, L"Применить данные панели");
+    AppendMenuW(menu, MF_STRING, MENU_OPEN_PANEL, L"Открыть панель");
+    AppendMenuW(menu, MF_STRING, MENU_RESET_PROGRESS, L"Сбросить прогресс");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(speed_menu, MF_STRING, MENU_SPEED_1, L"×1");
+    AppendMenuW(speed_menu, MF_STRING, MENU_SPEED_4, L"×4");
+    AppendMenuW(speed_menu, MF_STRING, MENU_SPEED_8, L"×8");
+    AppendMenuW(speed_menu, MF_STRING, MENU_SPEED_16, L"×16");
+    AppendMenuW(speed_menu, MF_STRING, MENU_SPEED_32, L"×32");
+    CheckMenuRadioItem(speed_menu, MENU_SPEED_1, MENU_SPEED_32,
+        selected_time_scale == 1 ? MENU_SPEED_1
+        : selected_time_scale == 4 ? MENU_SPEED_4
+        : selected_time_scale == 8 ? MENU_SPEED_8
+        : selected_time_scale == 16 ? MENU_SPEED_16 : MENU_SPEED_32,
+        MF_BYCOMMAND);
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(speed_menu), L"Скорость стройки");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, MENU_STARTUP, L"Запускать при старте Windows");
     if (startup_enabled()) CheckMenuItem(menu, MENU_STARTUP, MF_CHECKED);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -117,6 +240,24 @@ LRESULT CALLBACK tray_proc(HWND window, UINT message, WPARAM wparam, LPARAM lpar
         } else if (LOWORD(wparam) == MENU_STARTUP) {
             bool enabled = startup_enabled();
             set_startup(!enabled);
+        } else if (LOWORD(wparam) == MENU_RELOAD) {
+            request_panel_action(L"reload.request");
+        } else if (LOWORD(wparam) == MENU_OPEN_PANEL) {
+            request_panel_action(L"open-panel.request");
+        } else if (LOWORD(wparam) == MENU_RESET_PROGRESS) {
+            if (MessageBoxW(window, L"Сбросить прогресс стройки и вернуть рабочих на старт?",
+                L"Пирамида", MB_YESNO | MB_ICONWARNING) == IDYES)
+                request_panel_action(L"reset.request", true);
+        } else if (LOWORD(wparam) == MENU_SPEED_1) {
+            select_time_scale(1);
+        } else if (LOWORD(wparam) == MENU_SPEED_4) {
+            select_time_scale(4);
+        } else if (LOWORD(wparam) == MENU_SPEED_8) {
+            select_time_scale(8);
+        } else if (LOWORD(wparam) == MENU_SPEED_16) {
+            select_time_scale(16);
+        } else if (LOWORD(wparam) == MENU_SPEED_32) {
+            select_time_scale(32);
         }
         return 0;
     }
@@ -134,6 +275,7 @@ DWORD WINAPI tray_loop(void*) {
     tray_window = CreateWindowExW(WS_EX_TOOLWINDOW, klass.lpszClassName, L"Пирамида", WS_POPUP,
         0, 0, 0, 0, nullptr, nullptr, module, nullptr);
     if (!tray_window) return 0;
+    selected_time_scale = load_time_scale();
     tray_icon.cbSize = sizeof(tray_icon);
     tray_icon.hWnd = tray_window;
     tray_icon.uID = 1;

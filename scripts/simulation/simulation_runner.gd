@@ -95,7 +95,8 @@ func stall_diagnostic(after_seconds: float) -> Dictionary:
 			"incoming": state.incoming_count(owner),
 			"free": state.free_slots(owner),
 		}
-	return {"seconds_without_completion": quiet_seconds, "workers": workers, "buffers": buffers}
+	return {"seconds_without_completion": quiet_seconds, "workers": workers,
+		"buffers": buffers, "construction_blocked": _construction.blocked_snapshot()}
 
 
 # Captures timing at a tick boundary for the save layer. Inventory is held by GameState.
@@ -116,6 +117,7 @@ func to_dict() -> Dictionary:
 	return {
 		"tick": _tick, "last_completion_tick": _last_completion_tick,
 		"step_seconds": Values.encode_real(_step_seconds), "workers": workers, "model": state.to_dict(),
+		"construction_waiting": _construction.waiting_snapshot() if _construction != null else {},
 	}
 
 
@@ -133,6 +135,8 @@ static func from_dict(balance: Dictionary, data: Dictionary) -> RefCounted:
 	candidate._last_completion_tick = int(data.last_completion_tick)
 	candidate._production = QuarryProduction.new(candidate.state, balance.workers)
 	candidate._construction = ConstructionProduction.new(candidate.state, balance)
+	if not candidate._construction.restore_routes(data.get("construction_waiting", {})):
+		return null
 	return candidate
 
 

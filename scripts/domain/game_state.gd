@@ -17,14 +17,18 @@ class TransferTask:
 
 
 var geometry: Geometry
+var scaffold_sections: Array = [] # Derived from placed masonry; rebuilt after load.
 var currency: int # Retained for compatibility with existing wallpaper snapshots.
 var upgrade_levels: Dictionary[String, int] = {}
 var porter_count: int = 0
 var _porter_limit: int
+var active_builder_id: int = Owner.BUILDER
+var next_dresser_index: int = 0
 var current_row: int = 0
 var row_start: int = 0
 var completed_rows: int = 0
 var finished: bool = false
+var delivery_point := Vector2.INF # Position of the current upper scaffold stockpile.
 var porter_capacity: int = 1:
 	set(value):
 		if value >= porter_capacity and value <= MAX_PORTER_CAPACITY:
@@ -35,6 +39,8 @@ var _stocks: Dictionary[int, Array] = {}
 var _capacities: Dictionary[int, int] = {}
 var _workers: Dictionary[int, Worker] = {}
 var _tasks: Dictionary[int, TransferTask] = {}
+var _raw_places: Dictionary[int, float] = {}
+const RAW_GAP := 0.06
 
 
 func _init(balance: Dictionary) -> void:
@@ -66,8 +72,19 @@ func _init(balance: Dictionary) -> void:
 	for worker_id in [Owner.DRESSER, Owner.LIFT, Owner.BUILDER]:
 		_stocks[worker_id] = []
 		_capacities[worker_id] = 1
-	_porter_limit = 1
-	for index in range(clampi(int(balance.workers.porter.count), 1, _porter_limit)):
+	for role_config in [
+		[Worker.Role.MINER, 20, "miner", geometry.quarry_mouth()],
+		[Worker.Role.DRESSER, 30, "dresser", geometry.workshop()],
+		[Worker.Role.BUILDER, 40, "builder", geometry.platform(0)],
+	]:
+		var count := clampi(int(balance.workers[role_config[2]].get("count", 1)), 1, 4)
+		for index in range(count - 1):
+			var id: int = role_config[1] + index
+			_workers[id] = Worker.new(id, role_config[0], role_config[3])
+			_stocks[id] = []
+			_capacities[id] = 1
+	_porter_limit = clampi(int(balance.workers.porter.count), 1, 4)
+	for index in range(_porter_limit):
 		add_porter()
 
 
@@ -96,6 +113,27 @@ func worker_ids() -> Array[int]:
 	return _workers.keys()
 
 
+static func role_for_id(id: int) -> Worker.Role:
+	if id == Owner.MINER or id in range(20, 23):
+		return Worker.Role.MINER
+	if id == Owner.DRESSER or id in range(30, 33):
+		return Worker.Role.DRESSER
+	if id == Owner.BUILDER or id in range(40, 43):
+		return Worker.Role.BUILDER
+	if id == Owner.LIFT:
+		return Worker.Role.LIFT
+	return Worker.Role.PORTER
+
+
+func worker_ids_for_role(role: Worker.Role) -> Array[int]:
+	var ids: Array[int] = []
+	for id in _workers:
+		if _workers[id].role == role:
+			ids.append(id)
+	ids.sort()
+	return ids
+
+
 func lift_operator_id() -> int:
 	for id in _workers:
 		if _workers[id].fsm_state in [&"walk_to_lift", &"operate_lift"]:
@@ -111,6 +149,26 @@ func stock_count(owner: int) -> int:
 	return _stocks.get(owner, []).size()
 
 
+func raw_place(resource_id: int) -> Vector2:
+	return Vector2(_raw_places.get(resource_id, geometry.raw_storage().x), 0.0)
+
+
+func _find_raw_place(resource_id: int, places: Dictionary[int, float]) -> float:
+	var bounds := geometry.raw_storage_bounds()
+	var width := geometry.raw_block_width(resource_id)
+	var left := bounds.x
+	var ordered: Array[int] = places.keys()
+	ordered.sort_custom(func(a: int, b: int) -> bool: return places[a] < places[b])
+	for other_id in ordered:
+		var other_width := geometry.raw_block_width(other_id)
+		var occupied_left: float = places[other_id] - other_width * 0.5
+		if left + width + RAW_GAP <= occupied_left:
+			break
+		left = maxf(left, places[other_id] + other_width * 0.5 + RAW_GAP)
+	var center := ceilf((left + width * 0.5) * 100.0) / 100.0
+	return center if center + width * 0.5 <= bounds.y + 0.0001 else NAN
+
+
 func free_slots(owner: int) -> int:
 	return _capacities[owner] - stock_count(owner) - incoming_count(owner)
 
@@ -123,8 +181,28 @@ func placed_count() -> int:
 	return stock_count(Owner.PLACED)
 
 
+func placed_surface_snapshot() -> Dictionary:
+	if geometry.has_custom_blueprint():
+		return geometry.placed_surface_snapshot(stock(Owner.PLACED))
+	var placement_ids: Array[int] = []
+	for index in range(placed_count()):
+		placement_ids.append(index)
+	return geometry.placed_surface_snapshot(placement_ids)
+
+
+func target_count() -> int:
+	var total := 0
+	for row in range(geometry.row_count()):
+		total += geometry.row_size(row)
+	return total
+
+
 func platform_position() -> Vector2:
-	var builder := worker(Owner.BUILDER)
+	var builder := worker(active_builder_id)
+	if geometry.has_custom_blueprint():
+		if current_row == 0:
+			return geometry.platform(0)
+		return delivery_point if delivery_point.is_finite() else builder.position
 	if builder.fsm_state != &"rebuild_platform":
 		return geometry.platform(current_row)
 
@@ -145,11 +223,17 @@ func resource_record(resource_id: int) -> Dictionary:
 	var cell := geometry.quarry_grid_cell(resource_id)
 	return {
 		"id": resource_id,
+		"size": geometry.block_size_for_resource(resource_id),
+		"type": "stone",
 		"source_layer": cell.y,
 		"source_index": cell.x + geometry.quarry_layers() - 1,
 		"owner": _owners[resource_id],
 		"reserved_by": reserved_by(resource_id),
 	}
+
+
+func owner_of(resource_id: int) -> int:
+	return _owners[resource_id] if _valid_id(resource_id) else -1
 
 
 func reserved_by(resource_id: int) -> int:
@@ -200,6 +284,8 @@ func reserve_transfer(worker_id: int, resource_ids: Array[int], source_owner: in
 	var destination := route.y
 	if destination < 0 or resource_ids.size() > free_slots(destination):
 		return false
+	if destination == Owner.WORKSHOP_OUTPUT and stock_count(destination) + incoming_count(destination) > 0:
+		return false
 
 	var seen := {}
 	for resource_id in resource_ids:
@@ -211,11 +297,21 @@ func reserve_transfer(worker_id: int, resource_ids: Array[int], source_owner: in
 			return false
 		seen[resource_id] = true
 
+	var places := _raw_places.duplicate()
+	if destination == Owner.RAW:
+		for resource_id in resource_ids:
+			var center := _find_raw_place(resource_id, places)
+			if not is_finite(center):
+				return false
+			places[resource_id] = center
+
 	var task := TransferTask.new()
 	task.source = source
 	task.destination = destination
 	task.pending = resource_ids.duplicate()
 	_tasks[worker_id] = task
+	if destination == Owner.RAW:
+		_raw_places = places
 	return true
 
 
@@ -247,6 +343,10 @@ func deliver(worker_id: int, resource_id: int) -> bool:
 func cancel_transfer(worker_id: int) -> bool:
 	if stock_count(worker_id) != 0:
 		return false
+	var task: TransferTask = _tasks.get(worker_id)
+	if task != null and task.destination == Owner.RAW:
+		for resource_id in task.pending:
+			_raw_places.erase(resource_id)
 	return _tasks.erase(worker_id)
 
 
@@ -290,6 +390,33 @@ func validate() -> PackedStringArray:
 			if task.source == Owner.UNMINED and resource_id != mined_count():
 				errors.append("Miner task does not target the next quarry cell.")
 			claimed[resource_id] = true
+	var expected_raw := {}
+	for resource_id in stock(Owner.RAW):
+		expected_raw[resource_id] = true
+	for task in _tasks.values():
+		if task.destination == Owner.RAW:
+			for resource_id in task.pending:
+				expected_raw[resource_id] = true
+	# Legacy snapshots can contain more raw blocks than the visible strip can hold.
+	# Those blocks keep their old fallback position until the dresser consumes them;
+	# every new delivery still has to reserve a physical place below.
+	if _raw_places.size() > expected_raw.size():
+		errors.append("Raw storage has more places than stock and claims.")
+	for resource_id in _raw_places:
+		if not expected_raw.has(resource_id):
+			errors.append("Orphan raw storage place for %d." % resource_id)
+			continue
+		var width := geometry.raw_block_width(resource_id)
+		var center: float = _raw_places[resource_id]
+		var bounds := geometry.raw_storage_bounds()
+		if center - width * 0.5 < bounds.x - 0.0001 or center + width * 0.5 > bounds.y + 0.0001:
+			errors.append("Raw block %d extends outside storage." % resource_id)
+		for other_id in _raw_places:
+			if other_id >= resource_id:
+				continue
+			var distance: float = absf(center - _raw_places[other_id])
+			if distance + 0.0001 < (width + geometry.raw_block_width(other_id)) * 0.5 + RAW_GAP:
+				errors.append("Raw storage places overlap: %d and %d." % [resource_id, other_id])
 	return errors
 
 
@@ -298,27 +425,29 @@ func _valid_id(resource_id: int) -> bool:
 
 
 func _batch_capacity(worker_id: int) -> int:
-	return porter_capacity if worker_id >= Owner.FIRST_PORTER else 1
+	return porter_capacity if _workers.has(worker_id) and _workers[worker_id].role == Worker.Role.PORTER else 1
 
 
 func _route(worker_id: int, source: int = -1, destination: int = -1) -> Vector2i:
+	if not _workers.has(worker_id):
+		return Vector2i(-1, -1)
 	var route: Vector2i
-	match worker_id:
-		Owner.MINER:
+	match _workers[worker_id].role:
+		Worker.Role.MINER:
 			route = Vector2i(Owner.QUARRY, Owner.QUARRY_STOCK) if source == Owner.QUARRY \
 				else Vector2i(Owner.UNMINED, Owner.QUARRY)
-		Owner.DRESSER:
-			route = Vector2i(Owner.RAW, Owner.FINISHED if destination == Owner.FINISHED else Owner.WORKSHOP_OUTPUT)
-		Owner.LIFT:
+		Worker.Role.DRESSER:
+			route = Vector2i(Owner.QUARRY_STOCK if source == Owner.QUARRY_STOCK else Owner.RAW,
+				Owner.FINISHED if destination == Owner.FINISHED else Owner.WORKSHOP_OUTPUT)
+		Worker.Role.LIFT:
 			route = Vector2i(Owner.FINISHED, Owner.PLATFORM)
-		Owner.BUILDER:
+		Worker.Role.BUILDER:
 			if source == Owner.WORKSHOP_OUTPUT:
 				route = Vector2i(source, Owner.PLACED if current_row == 0 else Owner.FINISHED)
 			else:
 				route = Vector2i(Owner.FINISHED if source == Owner.FINISHED and current_row == 0 else Owner.PLATFORM, Owner.PLACED)
 		_:
-			route = Vector2i(Owner.WORKSHOP_OUTPUT, Owner.FINISHED) if source == Owner.WORKSHOP_OUTPUT \
-				else Vector2i(Owner.QUARRY, Owner.RAW)
+			route = Vector2i(Owner.QUARRY, Owner.RAW)
 			if source == Owner.QUARRY_STOCK:
 				route = Vector2i(Owner.QUARRY_STOCK, Owner.RAW)
 	if (source >= 0 and route.x != source) or (destination >= 0 and route.y != destination):
@@ -329,6 +458,8 @@ func _route(worker_id: int, source: int = -1, destination: int = -1) -> Vector2i
 func _move(resource_id: int, source: int, destination: int) -> void:
 	_stocks[source].erase(resource_id)
 	_stocks[destination].append(resource_id)
+	if source == Owner.RAW:
+		_raw_places.erase(resource_id)
 	_owners[resource_id] = destination
 
 func to_dict() -> Dictionary:
@@ -341,11 +472,18 @@ func to_dict() -> Dictionary:
 		tasks[str(id)] = task_resource_ids(id)
 		var task := _tasks[id]
 		transfer_routes[str(id)] = [task.source, task.destination]
+	var raw_places := {}
+	for resource_id in _raw_places:
+		raw_places[str(resource_id)] = _raw_places[resource_id]
 	return {
+		"raw_places": raw_places,
 		"currency": currency, "upgrade_levels": upgrade_levels.duplicate(),
+		"resource_sizes": geometry.resource_sizes(),
 		"porter_count": porter_count, "porter_capacity": porter_capacity,
 		"current_row": current_row, "row_start": row_start, "completed_rows": completed_rows,
+		"active_builder_id": active_builder_id, "next_dresser_index": next_dresser_index,
 		"finished": finished, "stocks": stocks, "tasks": tasks, "transfer_routes": transfer_routes,
+		"delivery_point": [delivery_point.x, delivery_point.y] if delivery_point.is_finite() else [],
 	}
 
 
@@ -364,6 +502,12 @@ func restore_snapshot(data: Dictionary, timings: Array, balance: Dictionary) -> 
 			or not data.get("finished") is bool or not data.get("upgrade_levels") is Dictionary \
 			or not data.get("stocks") is Dictionary or not data.get("tasks") is Dictionary:
 		return false
+	var saved_sizes: Variant = data.get("resource_sizes", geometry.resource_sizes())
+	if not saved_sizes is Array or saved_sizes.size() != RESOURCE_COUNT:
+		return false
+	for resource_id in range(RESOURCE_COUNT):
+		if not Values.integer(saved_sizes[resource_id], 4) or int(saved_sizes[resource_id]) != geometry.block_size_for_resource(resource_id):
+			return false
 	for code in data.upgrade_levels:
 		var level: Variant = data.upgrade_levels[code]
 		if not balance.upgrades.speed.has(code) or not Values.integer(level, int(balance.upgrades.maxSpeedLevel)) or level < 1:
@@ -374,12 +518,33 @@ func restore_snapshot(data: Dictionary, timings: Array, balance: Dictionary) -> 
 	porter_capacity = int(data.porter_capacity)
 	currency = int(data.currency)
 	current_row = int(data.current_row)
+	var saved_builder: Variant = data.get("active_builder_id", Owner.BUILDER)
+	if not Values.integer(saved_builder, 42) or not _workers.has(int(saved_builder)) \
+			or _workers[int(saved_builder)].role != Worker.Role.BUILDER:
+		return false
+	active_builder_id = int(saved_builder)
+	var saved_dresser: Variant = data.get("next_dresser_index", 0)
+	var dresser_count := worker_ids_for_role(Worker.Role.DRESSER).size()
+	if not Values.integer(saved_dresser, dresser_count - 1):
+		return false
+	next_dresser_index = int(saved_dresser)
 	row_start = int(data.row_start)
 	completed_rows = int(data.completed_rows)
 	finished = data.finished
+	var saved_delivery: Variant = data.get("delivery_point", [])
+	if not saved_delivery is Array or saved_delivery.size() not in [0, 2]:
+		return false
+	if saved_delivery.size() == 2:
+		if not (saved_delivery[0] is float or saved_delivery[0] is int) \
+				or not (saved_delivery[1] is float or saved_delivery[1] is int):
+			return false
+		delivery_point = Vector2(saved_delivery[0], saved_delivery[1])
+		if not delivery_point.is_finite():
+			return false
 	var routes: Variant = data.get("transfer_routes", {})
 	if not routes is Dictionary or not _restore_stocks(data.stocks) \
-			or not _restore_tasks(data.tasks, routes) or not validate().is_empty():
+			or not _restore_tasks(data.tasks, routes) or not _restore_raw_places(data.get("raw_places", {})) \
+			or not validate().is_empty():
 		return false
 	var expected_start := 0
 	for row in range(current_row):
@@ -387,12 +552,17 @@ func restore_snapshot(data: Dictionary, timings: Array, balance: Dictionary) -> 
 	var row_end := expected_start + geometry.row_size(current_row)
 	if row_start != expected_start or placed_count() < row_start or placed_count() > row_end \
 			or completed_rows != current_row + int(placed_count() == row_end) \
-			or finished != (placed_count() == RESOURCE_COUNT):
+			or finished != (placed_count() == target_count()):
 		return false
+	if saved_delivery.is_empty() and geometry.has_custom_blueprint() \
+			and current_row > 0 and stock_count(Owner.PLATFORM) > 0:
+		# The old stockpile remains at its saved physical location until collected.
+		delivery_point = geometry.platform(current_row)
 	for id in range(RESOURCE_COUNT):
 		if (_owners[id] == Owner.UNMINED) != (id >= mined_count()):
 			return false
-	return _restore_workers(timings, balance)
+	var workers_restored := _restore_workers(timings, balance)
+	return workers_restored
 
 
 func _restore_stocks(stocks: Dictionary) -> bool:
@@ -417,6 +587,34 @@ func _restore_stocks(stocks: Dictionary) -> bool:
 	return true
 
 
+func _restore_raw_places(saved: Variant) -> bool:
+	if not saved is Dictionary:
+		return false
+	_raw_places.clear()
+	if not saved.is_empty():
+		for key in saved:
+			if not str(key).is_valid_int() or not saved[key] is float:
+				return false
+			var id := int(key)
+			if not _valid_id(id) or not is_finite(saved[key]):
+				return false
+			_raw_places[id] = float(saved[key])
+		return true
+	# Earlier snapshots only had count-based storage; assign stable first-fit positions.
+	var pending: Array[int] = []
+	for resource_id in stock(Owner.RAW):
+		pending.append(resource_id)
+	for task in _tasks.values():
+		if task.destination == Owner.RAW:
+			pending.append_array(task.pending)
+	for id in pending:
+		var center := _find_raw_place(id, _raw_places)
+		if not is_finite(center):
+			continue
+		_raw_places[id] = center
+	return true
+
+
 func _restore_tasks(tasks: Dictionary, routes: Dictionary) -> bool:
 	for key in tasks:
 		if not key is String or not key.is_valid_int():
@@ -425,7 +623,7 @@ func _restore_tasks(tasks: Dictionary, routes: Dictionary) -> bool:
 		if str(id) != key or not _workers.has(id) or not tasks[key] is Array:
 			return false
 		var task := TransferTask.new()
-		var route := _route(id, -1, Owner.FINISHED if id == Owner.DRESSER else -1)
+		var route := _route(id, -1, Owner.FINISHED if _workers[id].role == Worker.Role.DRESSER else -1)
 		if routes.has(key):
 			var endpoints: Variant = routes[key]
 			if not endpoints is Array or endpoints.size() != 2 \
@@ -449,7 +647,7 @@ func _restore_workers(timings: Array, balance: Dictionary) -> bool:
 	var states := [
 		["move_to_cell", "mine", "walk_to_pickup", "load", "walk_to_storage", "unload",
 			"return_to_quarry"], ["process_brick"], ["lift_brick"],
-		["walk_to_brick", "place_brick", "return_to_platform", "rebuild_platform", "climb_to_platform",
+		["walk_to_brick", "place_brick", "return_to_platform", "rebuild_platform", "climb_to_platform", "join_platform",
 			"walk_to_workshop", "walk_to_lift_base", "unload_at_lift", "walk_to_lift", "operate_lift", "return_from_lift"],
 		["walk_to_pickup", "load", "walk_to_storage", "unload", "return_to_raw_storage"],
 	]
@@ -459,7 +657,7 @@ func _restore_workers(timings: Array, balance: Dictionary) -> bool:
 	var seen := {}
 	var lift_operator := -1
 	for timing in timings:
-		if not timing is Dictionary or not Values.integer(timing.get("id"), Owner.FIRST_PORTER + _porter_limit - 1):
+		if not timing is Dictionary or not Values.integer(timing.get("id"), 42):
 			return false
 		var id := int(timing.id)
 		var agent := worker(id)
@@ -474,16 +672,22 @@ func _restore_workers(timings: Array, balance: Dictionary) -> bool:
 		var requires_task := agent.fsm_state in [&"move_to_cell", &"mine", &"process_brick", &"lift_brick",
 			&"walk_to_brick", &"place_brick", &"walk_to_pickup", &"load", &"walk_to_storage", &"unload",
 			&"walk_to_workshop", &"walk_to_lift_base", &"unload_at_lift"]
-		if requires_task != _tasks.has(id):
+		var idle_builder_wait := agent.role == Worker.Role.BUILDER and agent.fsm_state == &"idle" \
+			and _tasks.has(id)
+		if requires_task != _tasks.has(id) and not idle_builder_wait:
 			return false
-		if requires_task and id in [Owner.DRESSER, Owner.LIFT, Owner.BUILDER]:
+		if (requires_task or idle_builder_wait) and agent.role in [Worker.Role.DRESSER, Worker.Role.LIFT, Worker.Role.BUILDER]:
 			var expected_cargo := 0 if agent.fsm_state == &"walk_to_workshop" else 1
+			if idle_builder_wait:
+				if stock_count(id) > 1 or (stock_count(id) == 0 and _tasks[id].source != Owner.WORKSHOP_OUTPUT):
+					return false
+				expected_cargo = stock_count(id)
 			if stock_count(id) != expected_cargo:
 				return false
 			if agent.fsm_state in [&"walk_to_workshop", &"walk_to_lift_base", &"unload_at_lift"] \
 					and transfer_source(id) != Owner.WORKSHOP_OUTPUT:
 				return false
-		if requires_task and (id >= Owner.FIRST_PORTER or (id == Owner.MINER and transfer_source(id) == Owner.QUARRY)):
+		if requires_task and (agent.role == Worker.Role.PORTER or (agent.role == Worker.Role.MINER and transfer_source(id) == Owner.QUARRY)):
 			var loads := 0
 			var unloads := 0
 			for phase in timing.phases:

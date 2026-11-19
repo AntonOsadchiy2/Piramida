@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Пирамида — панель управления</title>
+  <style>
+    :root{font-family:system-ui,sans-serif;color:#35291d;background:#f3ecdd;color-scheme:light;--cell-size:clamp(14px,calc((100vw - 100px)/59 - 1px),22px)}
+    *{box-sizing:border-box}
+    body{margin:0;background:#f3ecdd;color:#35291d}
+    header{background:#493725;color:#fff8e9;padding:18px 24px}
+    h1{margin:0;font-size:1.55rem}
+    main{max-width:1440px;margin:auto;padding:20px 24px}
+    h2{margin:0 0 10px}
+    p{line-height:1.45}
+    button,select{font:inherit;cursor:pointer;border:1px solid #a48b68;background:#fff9eb;border-radius:6px;padding:9px 14px;color:#35291d}
+    button.primary{background:#79502e;color:white;border-color:#79502e}
+    button.danger{border-color:#a54832;color:#822d1e}
+    button:disabled{cursor:wait;opacity:.6}
+    button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #193e7b;outline-offset:2px}
+    .tabs{display:flex;gap:8px;margin:0 0 20px;flex-wrap:wrap}
+    .tabs button[aria-selected="true"]{background:#79502e;color:white;border-color:#79502e}
+    .connection-error{padding:12px 16px;border:1px solid #a54832;background:#fff0e9;color:#692d20;border-radius:6px}
+    .connection-error[hidden]{display:none}
+    .panel[hidden]{display:none}
+    .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .toolbar label{display:flex;align-items:center;gap:8px}
+    .grid-wrap{overflow:auto;background:#dfd0b5;border:1px solid #ae9876;margin:14px 0;max-height:72vh}
+    .grid{display:grid;grid-template-columns:repeat(59,var(--cell-size));width:max-content;gap:1px;padding:8px}
+    .cell{padding:0;border:0;border-radius:0;background:#f7efdf;width:var(--cell-size);height:var(--cell-size)}
+    .cell.on{background:#a8703f}
+    .cell.large{background:#80522e}
+    .cell[data-size="4"]{background:#5e3b23}
+    .cell:focus-visible{outline:2px solid #193e7b;outline-offset:-2px}
+    .hint{color:#655642}
+    .status{min-height:1.5em}
+    .settings-group{border:1px solid #c6b397;border-radius:8px;margin:12px 0;padding:12px 16px;min-width:0}
+    .settings-group legend{font-weight:700;padding:0 6px}
+    .settings-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px}
+    .settings-fields label{display:grid;grid-template-rows:minmax(2.8em,auto) auto;align-items:end;gap:4px;min-width:0}
+    .settings-fields input{font:inherit;padding:7px;width:100%;min-width:0;background:#fffdf8;color:#35291d;border:1px solid #a48b68;border-radius:4px}
+    .settings-actions{display:flex;gap:8px;flex-wrap:wrap}
+    @media(max-width:600px){header{padding:14px 16px}main{padding:16px}.settings-fields{grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr))}}
+  </style>
+</head>
+<body>
+<header><h1>Панель «Пирамиды»</h1></header>
+<main>
+  <nav class="tabs" aria-label="Разделы панели">
+    <button type="button" id="tab-blueprint" aria-selected="true" aria-controls="blueprint-panel">Чертёж постройки</button>
+    <button type="button" id="tab-settings" aria-selected="false" aria-controls="settings-panel">Настройки игры</button>
+  </nav>
+  <p id="connection-error" class="connection-error" role="alert" hidden></p>
+  <section id="blueprint-panel" class="panel" aria-labelledby="tab-blueprint">
+    <h2>Чертёж постройки</h2>
+    <p>Нажимайте на клетки, чтобы поставить или убрать блок. Нижний ряд — земля. Блоки могут располагаться отдельно и не обязаны иметь опору снизу.</p>
+    <div class="toolbar">
+      <label>Размер нового блока <select id="block-size"><option value="1">1 × 1</option><option value="2">2 × 2</option><option value="4">4 × 4</option></select></label>
+      <button type="button" id="save" class="primary">Сохранить чертёж</button>
+      <button type="button" id="clear">Очистить поле</button>
+      <button type="button" id="default">Вернуть пирамиду</button>
+      <button type="button" id="reload-blueprint">Обновить данные</button>
+      <button type="button" id="reset-progress" class="danger">Сбросить прогресс</button>
+      <strong id="count"></strong>
+    </div>
+    <p id="status" class="status" role="status"></p>
+    <div class="grid-wrap"><div id="grid" class="grid" aria-label="Сетка чертежа"></div></div>
+    <p class="hint">Сетка 59 × 30, максимум 900 блоков. После сохранения выберите «Применить данные панели» в трее игры или запустите игру заново. Прогресс каждого чертежа хранится отдельно. Сброс начинает стройку заново по сохранённым чертежу и настройкам; несохранённые изменения поля не применяются.</p>
+  </section>
+  <section id="settings-panel" class="panel" aria-labelledby="tab-settings" hidden>
+    <h2>Настройки игры</h2>
+    <p>Значения загружаются из сохранённых настроек или исходного баланса игры. После сохранения выберите «Применить данные панели» в трее игры или запустите игру заново.</p>
+    <form id="settings"><div id="fields"></div><p class="settings-actions">
+      <button class="primary">Сохранить настройки</button>
+      <button type="button" id="reset-settings">Вернуть исходные настройки</button>
+      <button type="button" id="reload-settings">Обновить данные</button>
+    </p></form>
+    <p id="settings-status" class="status" role="status"></p>
+    <p class="hint">Добытчики и строители по очереди занимают общий рабочий участок; обработчики и носильщики работают параллельно.</p>
+  </section>
+</main>
+<script>
+const grid=document.querySelector('#grid'), status=document.querySelector('#status'), count=document.querySelector('#count');
+const groups=[
+  ['Добыча камня', [['minerCount','Добытчиков, чел.',1,4,1],['minerMove','Скорость добытчика, ед./с',.1,20,.1],['mineSeconds','Добыча одного камня, с',.1,120,.1]]],
+  ['Переноска', [['porterCount','Носильщиков, чел.',1,4,1],['porterEmpty','Скорость без груза, ед./с',.1,20,.1],['porterLoaded','Скорость с грузом, ед./с',.1,20,.1],['loadSeconds','Погрузка одного камня, с',.1,120,.1],['unloadSeconds','Разгрузка одного камня, с',.1,120,.1]]],
+  ['Обработка камня', [['dresserCount','Обработчиков, чел.',1,4,1],['dresserMove','Скорость обработчика, ед./с',.1,20,.1],['dressSeconds','Обработка одного камня, с',.1,120,.1]]],
+  ['Строительство', [['builderCount','Строителей, чел.',1,4,1],['builderMove','Скорость строителя, ед./с',.1,20,.1],['placeSeconds','Укладка одного блока, с',.1,120,.1],['sizePenalty','Коэффициент замедления блоков крупнее 1 × 1',1,10,.1],['liftBase','Подъём блока: основное время, с',.1,120,.1],['liftPerRow','Добавка к подъёму за каждый ряд, с',0,30,.01],['rebuildSeconds','Перестройка площадки, с',.1,120,.1]]],
+  ['Погода', [['weatherMin','Минимум до смены погоды, с',1,3600,1],['weatherMax','Максимум до смены погоды, с',1,3600,1],['weatherTransition','Плавный переход погоды, с',.1,3600,.1],['clearWeight','Вес ясной погоды',0,100,.1],['partlyWeight','Вес переменной облачности',0,100,.1],['cloudyWeight','Вес пасмурной погоды',0,100,.1]]]
+];
+const fieldSpecs=groups.flatMap(([,fields])=>fields);
+const form=document.querySelector('#settings'), settingsStatus=document.querySelector('#settings-status');
+for(const [title,fields] of groups){
+  const section=document.createElement('fieldset');section.className='settings-group';
+  const legend=document.createElement('legend');legend.textContent=title;section.append(legend);
+  const list=document.createElement('div');list.className='settings-fields';
+  for(const [name,label,min,max,step] of fields){
+    const wrap=document.createElement('label'),caption=document.createElement('span');caption.textContent=label;wrap.append(caption);
+    const input=document.createElement('input');input.type='number';input.name=name;input.min=min;input.max=max;input.step=step;input.required=true;wrap.append(input);list.append(wrap);
+  }
+  section.append(list);
+  if(title==='Погода'){const hint=document.createElement('p');hint.className='hint';hint.textContent='Веса задают относительные шансы следующего состояния. Например, 2 / 1 / 1 означает, что ясная погода выбирается вдвое чаще каждого другого состояния.';section.append(hint);}
+  document.querySelector('#fields').append(section);
+}
+function showPanel(name){
+  for(const id of ['blueprint','settings']){const active=id===name;document.querySelector('#'+id+'-panel').hidden=!active;document.querySelector('#tab-'+id).setAttribute('aria-selected',String(active));}
+}
+document.querySelector('#tab-blueprint').onclick=()=>showPanel('blueprint');
+document.querySelector('#tab-settings').onclick=()=>showPanel('settings');
+async function getJson(url){
+  let r;
+  try{r=await fetch(url,{cache:'no-store'});}
+  catch{
+    const message='Нет связи с локальным сервером. Запустите tools/local-panel/start-panel.cmd и откройте адрес, который напечатает сервер.';
+    const alert=document.querySelector('#connection-error');alert.textContent=message;alert.hidden=false;
+    throw Error(message);
+  }
+  const value=await r.json();if(!r.ok)throw Error(value.error||'Ошибка чтения');return value;
+}
+async function loadSettings(){
+  try{const value=await getJson('/api/settings');for(const [name] of fieldSpecs)form.elements[name].value=value[name];settingsStatus.textContent=value.warning||(value.source==='default'?'Загружены исходные значения баланса игры.':'Загружены сохранённые настройки.');}
+  catch(e){settingsStatus.textContent=e.message;}
+}
+form.onsubmit=async e=>{
+  e.preventDefault();const value={version:1};for(const [name] of fieldSpecs)value[name]=Number(form.elements[name].value);
+  try{const r=await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});const data=await r.json();if(!r.ok)throw Error(data.error);settingsStatus.textContent='Настройки сохранены. Выберите «Применить данные панели» в трее игры.';}
+  catch(error){settingsStatus.textContent=error.message;}
+};
+document.querySelector('#reset-settings').onclick=async()=>{
+  try{const r=await fetch('/api/settings',{method:'DELETE'});if(!r.ok)throw Error('Не удалось сбросить настройки');await loadSettings();settingsStatus.textContent='Исходные настройки сохранены. Выберите «Применить данные панели» в трее игры.';}
+  catch(e){settingsStatus.textContent=e.message;}
+};
+document.querySelector('#reload-settings').onclick=loadSettings;
+const blocks=new Map(),buttons=new Map();const key=(x,y)=>`${x},${y}`;
+function footprint(block){const cells=[];for(let dy=0;dy<block.size;dy++)for(let dx=0;dx<block.size;dx++)cells.push(key(block.x+dx,block.y+dy));return cells;}
+function blockAt(cell){for(const block of blocks.values())if(footprint(block).includes(cell))return block;return null;}
+function refresh(){count.textContent=`Блоков: ${blocks.size}`;for(const [k,b] of buttons){const piece=blockAt(k);b.classList.toggle('on',!!piece);b.classList.toggle('large',!!piece&&piece.size>1);b.dataset.size=piece?.size??'';b.title=piece?`${piece.x}, ${piece.y} · ${piece.size} × ${piece.size}`:k;b.setAttribute('aria-pressed',String(!!piece));}}
+for(let y=29;y>=0;y--)for(let x=0;x<59;x++){
+  const b=document.createElement('button'),k=key(x,y);b.type='button';b.className='cell';b.title=`${x}, ${y}`;b.setAttribute('aria-label',`Столбец ${x+1}, ряд ${y+1}`);
+  b.addEventListener('click',()=>{const old=blockAt(k);if(old)blocks.delete(key(old.x,old.y));else{const size=Number(document.querySelector('#block-size').value),piece={x,y,type:'stone',size};if(x+size>59||y+size>30||footprint(piece).some(cell=>blockAt(cell))){status.textContent='Блок не помещается или пересекается с другим.';return;}blocks.set(key(x,y),piece);}refresh();status.textContent='Чертёж изменён. Сохраните его, чтобы применить при запуске игры.';});
+  buttons.set(k,b);grid.append(b);
+}
+async function loadBlueprint(){
+  try{const value=await getJson('/api/blueprint');blocks.clear();for(const b of value.blocks)blocks.set(key(b.x,b.y),{...b,size:b.size??1});refresh();status.textContent=value.warning||(value.isDefault?'Показана стандартная пирамида из игры.':'Загружен сохранённый чертёж.');}
+  catch(e){status.textContent=e.message;}
+}
+document.querySelector('#save').onclick=async()=>{
+  const data={version:2,blocks:[...blocks.values()]};if(!data.blocks.length||data.blocks.length>900){status.textContent='Нужно от 1 до 900 блоков.';return;}
+  try{const r=await fetch('/api/blueprint',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await r.json();if(!r.ok)throw Error(result.error);blocks.clear();for(const b of result.blocks)blocks.set(key(b.x,b.y),b);refresh();status.textContent='Чертёж сохранён. Выберите «Применить данные панели» в трее игры.';}
+  catch(e){status.textContent=e.message;}
+};
+document.querySelector('#clear').onclick=()=>{blocks.clear();refresh();status.textContent='Поле очищено. Сохранённый файл пока не изменён.';};
+document.querySelector('#default').onclick=async()=>{
+  try{const r=await fetch('/api/blueprint',{method:'DELETE'});if(!r.ok)throw Error('Не удалось включить пирамиду');await loadBlueprint();status.textContent='Стандартная пирамида сохранена. Выберите «Применить данные панели» в трее игры.';}
+  catch(e){status.textContent=e.message;}
+};
+document.querySelector('#reload-blueprint').onclick=loadBlueprint;
+document.querySelector('#reset-progress').onclick=async()=>{
+  if(!confirm('Сбросить текущий прогресс стройки? Рабочие вернутся на стартовые позиции. Будут использованы сохранённые чертёж и настройки.'))return;
+  const button=document.querySelector('#reset-progress');button.disabled=true;
+  try{
+    const r=await fetch('/api/progress/reset',{method:'POST'});const data=await r.json();if(!r.ok)throw Error(data.error||'Не удалось запросить сброс');
+    status.textContent='Сброс запрошен. Ожидаем игру…';
+    for(let attempt=0;attempt<20;attempt++){
+      await new Promise(resolve=>setTimeout(resolve,250));
+      const state=await getJson('/api/progress/reset');
+      if(!state.pending){status.textContent='Прогресс сброшен. Стройка начинается с нуля по сохранённому чертежу.';return;}
+    }
+    status.textContent='Сброс сохранён и выполнится при следующем запуске игры. Если игра запущена, проверьте её окно.';
+  }catch(e){status.textContent=e.message;}finally{button.disabled=false;}
+};
+if(location.protocol==='file:'){
+  const message='Панель открыта как файл. Запустите tools/local-panel/start-panel.cmd и откройте адрес, который напечатает сервер.';
+  const alert=document.querySelector('#connection-error');alert.textContent=message;alert.hidden=false;
+  status.textContent=message;settingsStatus.textContent=message;
+}else{loadSettings();loadBlueprint();}
+</script>
+</body>
+</html>

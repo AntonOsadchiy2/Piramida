@@ -20,6 +20,7 @@ var position: Vector2
 var path_segment: int = 0
 var remaining_distance: float = 0.0
 var remaining_work: float = 0.0
+var route_waiting := false
 var _phases: Array[Phase] = []
 
 
@@ -71,7 +72,7 @@ func set_active_rate(rate: float) -> bool:
 
 func advance(seconds: float) -> Array[Dictionary]:
 	var completed: Array[Dictionary] = []
-	if not is_finite(seconds) or seconds <= 0.0:
+	if route_waiting or not is_finite(seconds) or seconds <= 0.0:
 		return completed
 	var time_left := seconds
 	# Each iteration either consumes a segment or phase, or ends the advance.
@@ -116,7 +117,7 @@ func timing_snapshot() -> Dictionary:
 	return {
 		"speed_multiplier": speed_multiplier, "id": id, "state": String(fsm_state), "position": [position.x, position.y],
 		"path_segment": path_segment, "remaining_distance": remaining_distance,
-		"remaining_work": remaining_work, "phases": phases,
+		"remaining_work": remaining_work, "route_waiting": route_waiting, "phases": phases,
 	}
 
 
@@ -154,6 +155,18 @@ func _load_segment() -> void:
 
 func movement_route() -> PackedVector2Array:
 	return PackedVector2Array() if _phases.is_empty() else _phases[0].route
+
+
+func replan_active_move(route: PackedVector2Array) -> bool:
+	if _phases.is_empty() or _phases[0].route.is_empty() or route.is_empty() \
+			or not route[0].is_equal_approx(position):
+		return false
+	_phases[0].route = route.duplicate()
+	path_segment = 0
+	remaining_distance = 0.0
+	_load_segment()
+	route_waiting = false
+	return true
 
 
 func segment_direction() -> Vector2:
@@ -292,9 +305,11 @@ func restore_timing(data: Dictionary, allowed_states: Array) -> bool:
 	var work: Variant = Values.decode_real(data.get("remaining_work"))
 	var multiplier: Variant = Values.decode_real(data.get("speed_multiplier"))
 	var active: Variant = data.get("state")
+	var saved_waiting: Variant = data.get("route_waiting", false)
 	if not Values.point(point) or not phases is Array or not active is String \
 			or not Values.integer(segment, 10000) or not Values.number(distance) \
-			or not Values.number(work) or not Values.number(multiplier, 1.0):
+			or not Values.number(work) or not Values.number(multiplier, 1.0) \
+			or not saved_waiting is bool:
 		return false
 	for entry in phases:
 		if not entry is Dictionary or entry.get("state") not in allowed_states \
@@ -313,7 +328,7 @@ func restore_timing(data: Dictionary, allowed_states: Array) -> bool:
 				return false
 			phase.route.append(Vector2(vertex[0], vertex[1]))
 		var moving := phase.state in [&"move_to_cell", &"lift_brick", &"walk_to_brick",
-			&"return_to_platform", &"climb_to_platform", &"walk_to_pickup", &"walk_to_storage",
+			&"return_to_platform", &"climb_to_platform", &"join_platform", &"walk_to_pickup", &"walk_to_storage",
 			&"walk_to_workshop", &"walk_to_lift_base", &"walk_to_lift", &"return_from_lift",
 			&"return_to_raw_storage", &"return_to_quarry"]
 		if moving == phase.route.is_empty() or (moving and phase.work != 0.0):
@@ -333,10 +348,13 @@ func restore_timing(data: Dictionary, allowed_states: Array) -> bool:
 			length = phase.route[segment].distance_to(phase.route[segment + 1])
 		if distance > length:
 			return false
+	if saved_waiting and (_phases.is_empty() or _phases[0].route.is_empty()):
+		return false
 	fsm_state = StringName(active)
 	position = Vector2(point[0], point[1])
 	path_segment = int(segment)
 	remaining_distance = distance
 	remaining_work = work
 	speed_multiplier = multiplier
+	route_waiting = saved_waiting
 	return true

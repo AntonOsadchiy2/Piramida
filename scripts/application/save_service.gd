@@ -34,15 +34,16 @@ func load_game() -> Dictionary:
 	return primary
 
 
-func save_game(simulation: Simulation, lifecycle: Dictionary = {}, transfer_facing: Dictionary = {}) -> Error:
+func save_game(simulation: Simulation, lifecycle: Dictionary = {}, transfer_facing: Dictionary = {}, reset_progress := false) -> Error:
 	var primary := _read(_path)
 	var backup := _read(_path + ".bak")
-	if Status.UNSUPPORTED in [primary.status, backup.status]:
-		return ERR_UNAVAILABLE
-	if Status.IO_ERROR in [primary.status, backup.status]:
-		return ERR_CANT_OPEN
-	if primary.status == Status.INVALID and backup.status != Status.OK:
-		return ERR_FILE_CORRUPT
+	if not reset_progress:
+		if Status.UNSUPPORTED in [primary.status, backup.status]:
+			return ERR_UNAVAILABLE
+		if Status.IO_ERROR in [primary.status, backup.status]:
+			return ERR_CANT_OPEN
+		if primary.status == Status.INVALID and backup.status != Status.OK:
+			return ERR_FILE_CORRUPT
 	var result := DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_path.get_base_dir()))
 	if result != OK:
 		return result
@@ -65,9 +66,10 @@ func save_game(simulation: Simulation, lifecycle: Dictionary = {}, transfer_faci
 		return result
 	if _read(temporary).status != Status.OK:
 		return ERR_FILE_CORRUPT
-	if primary.status == Status.OK:
+	if reset_progress or primary.status == Status.OK:
 		var backup_temporary := _path + ".bak.tmp"
-		result = _write(backup_temporary, primary.text)
+		var backup_text: String = FileAccess.get_file_as_string(temporary) if reset_progress else primary.text
+		result = _write(backup_temporary, backup_text)
 		if result != OK:
 			return result
 		if _read(backup_temporary).status != Status.OK:

@@ -5,11 +5,25 @@ const SaveService = preload("res://scripts/application/save_service.gd")
 const WorldPresenter = preload("res://scripts/presentation/world_presenter.gd")
 const WallpaperSky = preload("res://scripts/presentation/wallpaper_sky.gd")
 const WallpaperWeather = preload("res://scripts/application/wallpaper_weather.gd")
+const Blueprint = preload("res://scripts/domain/blueprint.gd")
+const PanelSettings = preload("res://scripts/application/panel_settings.gd")
 const CloudLayer = preload("res://scripts/presentation/cloud_layer.gd")
 const SiteTorches = preload("res://assets/wallpaper/torches/site_torches.gd")
 const WORLD_SCENE := preload("res://scenes/wallpaper_world.tscn")
 const COMPLETED_DISPLAY_MSEC := 5000
+const MIN_AUTOSAVE_REAL_MSEC := 5000
 const SAVE_PATH := "user://wallpaper/save.json"
+const TIME_SCALE_PATH := "user://wallpaper/time-scale.txt"
+const TIME_SCALES := [1, 4, 8, 16, 32]
+const TRAY_RELOAD_REQUEST := "user://wallpaper/reload.request"
+const PANEL_RESET_REQUEST := "user://wallpaper/reset.request"
+const TRAY_OPEN_PANEL_REQUEST := "user://wallpaper/open-panel.request"
+const PANEL_URL_FILE := "user://wallpaper/panel-url.txt"
+const PANEL_FILES := [
+	"tools/local-panel/server.cjs",
+	"tools/local-panel/index.html",
+	"data/balance.json",
+]
 
 var world: WorldPresenter
 var simulation: Simulation
@@ -27,7 +41,14 @@ var _weather := WallpaperWeather.new()
 var _save_service: SaveService
 var _temporary_save_dir: DirAccess
 var _next_save_at := INF
+var _next_timed_save_at_msec := 0
 var _last_saved_rows := 0
+var _time_scale := 1.0
+var _profile_key := ""
+var _panel_pid := -1
+var _tray_poll_elapsed := 0.0
+var _handled_reset_request := ""
+var _failed_reset_request := ""
 @onready var _clouds: CloudLayer = $CloudLayer
 
 
@@ -46,6 +67,13 @@ static func wallpaper_balance(base: Dictionary) -> Dictionary:
 
 func _ready() -> void:
 	_acceptance = OS.get_cmdline_user_args().has("--verify-wallpaper-cycles")
+	if OS.get_cmdline_user_args().has("--verify-panel-resources"):
+		var panel_server := _extract_panel_files()
+		print("PASS: panel resources in export" if not panel_server.is_empty() else "FAIL: panel resources missing")
+		get_tree().quit(0 if not panel_server.is_empty() else 1)
+		return
+	if OS.has_feature("single_process_wallpaper") and not _acceptance and not use_temporary_save:
+		_clear_tray_requests()
 	if OS.has_feature("single_process_wallpaper") and DisplayServer.get_name() != "headless":
 		get_window().position = Vector2i(-32000, -32000)
 		AudioServer.set_bus_mute(0, true)
@@ -53,9 +81,8 @@ func _ready() -> void:
 		if not _attach_desktop():
 			get_tree().quit(1)
 			return
-	var base: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/balance.json"))
-	_balance = wallpaper_balance(base)
-	var save_path := SAVE_PATH
+	_apply_panel_config(_panel_config())
+	_time_scale = _load_time_scale()
 	if _acceptance or use_temporary_save:
 		# Keep the handle alive until the scene exits so Godot cleans up the scratch files.
 		_temporary_save_dir = DirAccess.create_temp("piramida-wallpaper-")
@@ -63,9 +90,7 @@ func _ready() -> void:
 			push_error("Could not create a temporary directory for wallpaper saves.")
 			get_tree().quit(1)
 			return
-		save_path = _temporary_save_dir.get_current_dir().path_join("save.json")
-	_save_service = SaveService.new(_balance, save_path)
-	_step = float(_balance.simulation.fixedStepSeconds)
+		_save_service = SaveService.new(_balance, _temporary_save_dir.get_current_dir().path_join("save.json"))
 	_light = CanvasModulate.new()
 	add_child(_light)
 	_torches = SiteTorches.new()
@@ -73,8 +98,86 @@ func _ready() -> void:
 	add_child(_torches)
 	if _temporary_save_dir != null:
 		_start_cycle()
-	else:
+	elif not _handle_reset_request():
 		_resume_cycle()
+
+
+func _panel_config() -> Dictionary:
+	var base: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/balance.json"))
+	var balance := wallpaper_balance(base)
+	var save_path := SAVE_PATH
+	var profile_key := ""
+	var custom: Array = []
+	var settings: Dictionary = {}
+	if not _acceptance and not use_temporary_save:
+		custom = _load_blueprint()
+		settings = _load_settings()
+		if not custom.is_empty():
+			balance.world["blueprintBlocks"] = custom
+			var levels := {}
+			for block in custom:
+				levels[int(block.y)] = true
+			balance.world.pyramidRows = levels.size()
+		if not settings.is_empty():
+			PanelSettings.apply(balance, settings)
+		if not custom.is_empty() or not settings.is_empty():
+			profile_key = JSON.stringify({"blueprint": custom, "settings": settings}, "", true).sha256_text()
+			save_path = "user://wallpaper/profiles/" + profile_key + "/save.json"
+	return {"balance": balance, "settings": settings, "save_path": save_path, "key": profile_key}
+
+
+func _apply_panel_config(config: Dictionary) -> void:
+	_balance = config.balance
+	_profile_key = config.key
+	_weather = WallpaperWeather.new()
+	if not config.settings.is_empty():
+		_weather.configure(config.settings)
+	_save_service = SaveService.new(_balance, config.save_path)
+	_step = float(_balance.simulation.fixedStepSeconds)
+
+
+func _reload_panel_data() -> void:
+	if _acceptance or use_temporary_save:
+		return
+	var config := _panel_config()
+	if config.key == _profile_key:
+		return
+	if not _save_progress():
+		push_warning("Panel reload cancelled because progress could not be saved.")
+		return
+	_apply_panel_config(config)
+	_resume_cycle()
+
+
+func _load_settings() -> Dictionary:
+	const PATH := "user://wallpaper/settings.json"
+	if not FileAccess.file_exists(PATH):
+		return {}
+	var result := PanelSettings.validate(JSON.parse_string(FileAccess.get_file_as_string(PATH)))
+	if result.is_empty():
+		push_warning("Ignoring invalid panel settings.")
+	return result
+
+
+func _load_blueprint() -> Array:
+	const PATH := "user://wallpaper/blueprint.json"
+	if not FileAccess.file_exists(PATH):
+		return []
+	var checked := Blueprint.validate(JSON.parse_string(FileAccess.get_file_as_string(PATH)))
+	if checked.has("error"):
+		push_warning("Ignoring invalid blueprint: " + checked.error)
+		return []
+	return checked.blocks
+
+
+func _load_time_scale() -> float:
+	if _acceptance or use_temporary_save or not FileAccess.file_exists(TIME_SCALE_PATH):
+		return 1.0
+	var text := FileAccess.get_file_as_string(TIME_SCALE_PATH).strip_edges()
+	if not text.is_valid_int():
+		return 1.0
+	var value := text.to_int()
+	return float(value) if value in TIME_SCALES else 1.0
 
 
 func _resume_cycle() -> void:
@@ -128,7 +231,7 @@ func _attach_desktop() -> bool:
 		== GDExtensionManager.LOAD_STATUS_OK
 
 
-func _start_cycle(restored: Simulation = null, transfer_facing: Dictionary = {}) -> void:
+func _start_cycle(restored: Simulation = null, transfer_facing: Dictionary = {}, reset_progress := false) -> bool:
 	var previous_world := world
 	simulation = restored if restored != null else Simulation.for_wallpaper(_balance)
 	world = WORLD_SCENE.instantiate()
@@ -153,10 +256,124 @@ func _start_cycle(restored: Simulation = null, transfer_facing: Dictionary = {})
 	_restart_at_msec = 0
 	_last_saved_rows = simulation.state.completed_rows
 	_next_save_at = simulation.elapsed_seconds() + float(_balance.simulation.autosaveSeconds)
-	_save_progress()
+	return _save_progress(reset_progress)
+
+
+func _reset_panel_progress() -> bool:
+	if _acceptance or use_temporary_save:
+		return false
+	var config := _panel_config()
+	if config.key != _profile_key and simulation != null and not _save_progress():
+		push_warning("Panel reset cancelled because previous profile could not be saved.")
+		return false
+	_apply_panel_config(config)
+	return _start_cycle(null, {}, true)
+
+
+func _handle_reset_request() -> bool:
+	if not FileAccess.file_exists(PANEL_RESET_REQUEST):
+		return false
+	var request_id := FileAccess.get_file_as_string(PANEL_RESET_REQUEST).strip_edges()
+	if request_id.is_empty() or request_id == _failed_reset_request:
+		return false
+	if request_id == _handled_reset_request:
+		return true
+	if not _reset_panel_progress():
+		_failed_reset_request = request_id
+		return false
+	_handled_reset_request = request_id
+	var result := DirAccess.remove_absolute(ProjectSettings.globalize_path(PANEL_RESET_REQUEST))
+	if result != OK:
+		push_warning("Could not clear panel reset request: " + error_string(result))
+	return true
+
+
+func _clear_tray_requests() -> void:
+	for request in [TRAY_RELOAD_REQUEST, TRAY_OPEN_PANEL_REQUEST]:
+		if FileAccess.file_exists(request):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(request))
+
+
+func _poll_tray_requests() -> void:
+	_time_scale = _load_time_scale()
+	if FileAccess.file_exists(PANEL_RESET_REQUEST):
+		if _handle_reset_request() and FileAccess.file_exists(TRAY_RELOAD_REQUEST):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(TRAY_RELOAD_REQUEST))
+	elif FileAccess.file_exists(TRAY_RELOAD_REQUEST):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(TRAY_RELOAD_REQUEST))
+		_reload_panel_data()
+	if FileAccess.file_exists(TRAY_OPEN_PANEL_REQUEST):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(TRAY_OPEN_PANEL_REQUEST))
+		_open_panel()
+
+
+func _extract_panel_files() -> String:
+	for relative_path in PANEL_FILES:
+		var source: String = "res://" + relative_path
+		var destination: String = "user://desktop/panel/" + relative_path
+		var content := FileAccess.get_file_as_bytes(source)
+		if content.is_empty():
+			push_error("Panel file is missing from the export: " + source)
+			return ""
+		if DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(destination.get_base_dir())) != OK:
+			push_error("Could not create panel directory: " + destination.get_base_dir())
+			return ""
+		if FileAccess.file_exists(destination) and FileAccess.get_file_as_bytes(destination) == content:
+			continue
+		var file := FileAccess.open(destination, FileAccess.WRITE)
+		if file == null:
+			push_error("Could not write panel file: " + destination)
+			return ""
+		file.store_buffer(content)
+		var error := file.get_error()
+		file.close()
+		if error != OK:
+			push_error("Could not write panel file: " + destination)
+			return ""
+	return ProjectSettings.globalize_path("user://desktop/panel/tools/local-panel/server.cjs")
+
+
+func _find_node_path() -> String:
+	var directories := OS.get_environment("PATH").split(";", false)
+	if OS.has_environment("ProgramFiles"):
+		directories.append(OS.get_environment("ProgramFiles").path_join("nodejs"))
+	for directory in directories:
+		var candidate := directory.strip_edges().trim_prefix('"').trim_suffix('"').path_join("node.exe")
+		if FileAccess.file_exists(candidate):
+			return candidate
+	return ""
+
+
+func _open_panel() -> void:
+	if _panel_pid > 0 and OS.is_process_running(_panel_pid):
+		if FileAccess.file_exists(PANEL_URL_FILE):
+			var url := FileAccess.get_file_as_string(PANEL_URL_FILE).strip_edges()
+			if url.begins_with("http://127.0.0.1:"):
+				OS.shell_open(url)
+		return
+	var node_path := _find_node_path()
+	if node_path.is_empty():
+		OS.alert("Для локальной панели установите Node.js и добавьте node.exe в PATH.", "Пирамида")
+		return
+	var server_path := _extract_panel_files()
+	if server_path.is_empty():
+		OS.alert("Не удалось извлечь файлы локальной панели.", "Пирамида")
+		return
+	if FileAccess.file_exists(PANEL_URL_FILE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(PANEL_URL_FILE))
+	_panel_pid = OS.create_process(node_path, PackedStringArray([
+		server_path, "--open", "--url-file", ProjectSettings.globalize_path(PANEL_URL_FILE)
+	]))
+	if _panel_pid < 0:
+		OS.alert("Не удалось запустить локальную панель.", "Пирамида")
 
 
 func _process(delta: float) -> void:
+	if not _acceptance and not use_temporary_save:
+		_tray_poll_elapsed += delta
+		if _tray_poll_elapsed >= 0.25:
+			_tray_poll_elapsed = 0.0
+			_poll_tray_requests()
 	_update_sky()
 	_weather.advance(delta)
 	_clouds.update_clouds(delta, world.wallpaper_sky_area(), _weather.cloud_cover)
@@ -171,13 +388,15 @@ func _process(delta: float) -> void:
 			_start_cycle()
 		return
 
-	_accumulator += _step * 256 if _acceptance else minf(delta, 0.25)
+	_accumulator += _step * 256 if _acceptance else minf(delta, 0.25) * _time_scale
 	while _accumulator >= _step:
 		_accumulator -= _step
 		var events := simulation.step_simulation()
 		world.capture_tick(simulation.state)
+		var timed_save_due := simulation.elapsed_seconds() >= _next_save_at \
+				and Time.get_ticks_msec() >= _next_timed_save_at_msec
 		if simulation.state.completed_rows != _last_saved_rows \
-				or simulation.elapsed_seconds() >= _next_save_at \
+				or timed_save_due \
 				or simulation.state.finished:
 			_save_progress()
 		world.play_production(events)
@@ -193,12 +412,17 @@ func _process(delta: float) -> void:
 	world.render_frame(_accumulator / _step, simulation.elapsed_seconds())
 
 
-func _save_progress() -> void:
+func _save_progress(reset_progress := false) -> bool:
 	if _save_service == null or simulation == null:
-		return
-	if _save_service.save_game(simulation, {}, world.transfer_facing_snapshot()) == OK:
-		_last_saved_rows = simulation.state.completed_rows
-		_next_save_at = simulation.elapsed_seconds() + float(_balance.simulation.autosaveSeconds)
+		return false
+	var result := _save_service.save_game(simulation, {}, world.transfer_facing_snapshot(), reset_progress)
+	if result != OK:
+		push_warning("Could not save wallpaper progress: " + error_string(result))
+		return false
+	_last_saved_rows = simulation.state.completed_rows
+	_next_save_at = simulation.elapsed_seconds() + float(_balance.simulation.autosaveSeconds)
+	_next_timed_save_at_msec = Time.get_ticks_msec() + MIN_AUTOSAVE_REAL_MSEC
+	return true
 
 
 func _notification(what: int) -> void:

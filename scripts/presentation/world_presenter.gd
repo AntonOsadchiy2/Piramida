@@ -36,6 +36,11 @@ const BUILDER_PLACE_GRIP := (Vector2(128.5, 63.5) - BUILDER_PLACE_FEET) * WORKER
 const BUILDER_PLACEMENT_APPROACH := 88.0
 const BUILDER_LIFT_APPROACH := 110.0
 const PORTER_SLED_DISTANCE := 94.0
+const SLED_BASE_SCALE := Vector2(0.85, 0.45)
+const SLED_DECK_WIDTH := 90.0
+# Top of the wooden deck (texture y=8, center y=24, sprite offset y=-16).
+const SLED_DECK_Y := -14.4
+const SLED_CARGO_GAP := 4.0
 const WALLPAPER_SLED_HITCH := Vector2(50.0, -11.0)
 const PORTER_SLED_COLUMNS := 3
 const PORTER_SLED_COLUMN_SPACING := 42.0
@@ -72,6 +77,7 @@ const STAR_STYLES := [
 @onready var cargo: Node2D = $Cargo
 
 var _art: Dictionary[String, Texture2D] = {}
+var _brick_variants: Array[Texture2D] = []
 var _worker_frames: Dictionary = {}
 var _sky_area: Rect2
 var _sky_background: Sprite2D
@@ -90,6 +96,7 @@ var overseer: SiteOverseer
 var _piles: Dictionary[int, Array] = {}
 var _quarry_stones: Array[Sprite2D] = []
 var _brick_cells: Array[Vector2i] = []
+var _large_brick_sprites: Dictionary[int, Sprite2D] = {}
 var _placing_brick: Sprite2D
 var _placement_before := 0.0
 var _placement_after := 0.0
@@ -97,6 +104,9 @@ var _builder_brick_target := Vector2.ZERO
 var _builder_lift_stance := 0.0
 var _platform: Sprite2D
 var _deck: Sprite2D
+var _scaffold_root: Node2D
+var _scaffold_revision := -1
+var _scaffold_row := -1
 var _pyramid_ramp: Polygon2D
 var _mast: Sprite2D
 var _pulley: Sprite2D
@@ -119,9 +129,9 @@ var _world: Dictionary
 var _mined := 0
 var _placed := 0
 var _row := 0
-var _deck_end := 0.0
 var _rebuilding := false
 var _finished := false
+var _active_builder_id := Owner.BUILDER
 
 
 static func screen_point(point: Vector2) -> Vector2:
@@ -149,6 +159,11 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 			_art[name] = load(PLACEHOLDERS + name + ".svg")
 		else:
 			_art[name] = load(ASSETS + name + ".png")
+	_brick_variants = [
+		_art.brick,
+		load(ASSETS + "brick_variant_2.png"),
+		load(ASSETS + "brick_variant_3.png"),
+	]
 
 	var layers := _geometry.quarry_layers()
 	var radius := float(layers) - 0.5
@@ -158,14 +173,26 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 	var brick := _geometry.brick_size() * PIXELS_PER_UNIT
 	_brick_height = brick.y
 	var left := screen_point(_geometry.brick_origin(0, 0)).x
-	var right := left + _geometry.row_size(0) * brick.x
+	var right := screen_point(Vector2(_geometry.pyramid_right(), 0)).x
 	_make_brick_tiles(Vector2i(brick), Vector2(left, -brick.y))
-	for row in range(int(_world.pyramidRows)):
+	for row in range(_geometry.row_count()):
 		for column in range(_geometry.row_size(row)):
 			var point := screen_point(_geometry.brick_origin(row, column))
-			var tile := Vector2i(roundi((point.x - left) / brick.x), -row)
+			var tile := Vector2i(roundi((point.x - left) / brick.x), roundi(point.y / brick.y))
 			_brick_cells.append(tile)
-			pyramid.set_cell(tile, 0, Vector2i.ZERO, 1)
+			var placement_index := _brick_cells.size() - 1
+			if _geometry.block_size_for_resource(placement_index) == 1:
+				pyramid.set_cell(tile, placement_index % _brick_variants.size(), Vector2i.ZERO, 1)
+			else:
+				var extent := _geometry.brick_extent(row, column) * PIXELS_PER_UNIT
+				var piece := Sprite2D.new()
+				piece.texture = _brick_variants[placement_index % _brick_variants.size()]
+				piece.position = point + Vector2(extent.x * 0.5, -extent.y * 0.5)
+				piece.scale = extent / piece.texture.get_size()
+				piece.modulate.a = 0.18
+				piece.z_index = pyramid.z_index
+				add_child(piece)
+				_large_brick_sprites[placement_index] = piece
 	_placing_brick = _sprite("brick", self)
 	_placing_brick.z_index = pyramid.z_index
 	_placing_brick.hide()
@@ -218,6 +245,9 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 	_pulley.z_index = 2
 	_deck = _sprite("beam", self)
 	_deck.z_index = 1
+	_scaffold_root = Node2D.new()
+	_scaffold_root.z_index = 2
+	add_child(_scaffold_root)
 	if _geometry.has_pyramid_ramp():
 		_pyramid_ramp = Polygon2D.new()
 		_pyramid_ramp.color = Color("#795139")
@@ -259,18 +289,18 @@ func setup(state: State, balance: Dictionary, configure_patrol: Callable = Calla
 		for i in range(int(balance.storages[key])):
 			pool.append(_sprite("stone" if owner == Owner.RAW else "brick", cargo))
 		_piles[owner] = pool
-	_update_pile(Owner.RAW, screen_point(_geometry.raw_storage()) + Vector2(-28, 0), 6, 32, 20)
+	_update_pile(Owner.RAW, screen_point(_geometry.raw_storage()), 1, 0, 0)
 	# Leave the crank and its stand clear even when the ground stock is full.
 	const BASE_PILE_COLUMNS := 6
 	var pile_right := hub.x - 22.0
 	var pile_left := pile_right - brick.x * BASE_PILE_COLUMNS
 	_update_pile(Owner.FINISHED, Vector2((pile_left + pile_right) * 0.5, _lift_base.y),
 		BASE_PILE_COLUMNS, brick.x, brick.y)
-	_update_pile(Owner.WORKSHOP_OUTPUT, screen_point(_geometry.workshop_pickup()), 3, brick.x, brick.y)
+	_update_pile(Owner.WORKSHOP_OUTPUT, screen_point(_geometry.workshop_pickup()), 1, 0, 0)
 
-	var top: Vector2 = screen_point(_geometry.brick_origin(int(_world.pyramidRows) - 1, 0))
-	var bounds := Rect2(original_left - 125, top.y - 180, right - original_left + 250,
-		original_bottom - top.y + 220)
+	var top_y := -_geometry.pyramid_top() * PIXELS_PER_UNIT
+	var bounds := Rect2(original_left - 125, top_y - 180, right - original_left + 250,
+		original_bottom - top_y + 220)
 	$Camera2D.setup(bounds,
 		Rect2(pit_left - 220, -100, pit_right - pit_left + 440, pit_bottom + 150),
 		Rect2(pile_left - 30.0, bounds.position.y,
@@ -303,7 +333,10 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 		_update_quarry(mined)
 	var placed := state.placed_count()
 	for i in range(_placed, placed):
-		pyramid.set_cell(_brick_cells[i], 0, Vector2i.ZERO)
+		if _geometry.block_size_for_resource(i) == 1:
+			pyramid.set_cell(_brick_cells[i], i % _brick_variants.size(), Vector2i.ZERO)
+	for index in _large_brick_sprites:
+		_large_brick_sprites[index].modulate.a = 1.0 if index < placed else 0.18
 	_placed = placed
 
 
@@ -312,20 +345,21 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 		var stone := _quarry_stones[i]
 		stone.visible = i < ready_stones.size()
 		if stone.visible:
+			_set_cargo_size(stone, ready_stones[i])
 			stone.position = screen_point(_geometry.quarry_pickup(ready_stones[i], mined)) + Vector2(0, -17)
 
 	_platform_after = screen_point(state.platform_position())
 	if snap:
 		_platform_before = _platform_after
 	_row = state.current_row
+	_sync_scaffold_visual(state)
 	_finished = state.finished
-	_rebuilding = state.worker(Owner.BUILDER).fsm_state == &"rebuild_platform"
-	var target := clampi(placed - state.row_start, 0, _geometry.row_size(_row) - 1)
-	var route := _geometry.builder_to_brick(_row, target)
-	var builder := state.worker(Owner.BUILDER)
+	_active_builder_id = state.active_builder_id
+	_rebuilding = state.worker(state.active_builder_id).fsm_state == &"rebuild_platform"
+	var builder := state.worker(state.active_builder_id)
 	var unloading := builder.fsm_state == &"unload_at_lift"
 	var hauling_to_lift := builder.fsm_state == &"walk_to_lift_base"
-	var placing := (builder.fsm_state == &"place_brick" or unloading) and state.stock_count(Owner.BUILDER) > 0
+	var placing := (builder.fsm_state == &"place_brick" or unloading) and state.stock_count(state.active_builder_id) > 0
 	var placement_center_x := INF
 	var base_stock := state.stock_count(Owner.FINISHED)
 	if snap or builder.fsm_state not in [&"walk_to_lift", &"return_from_lift"]:
@@ -337,6 +371,7 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 		_builder_lift_stance = placement_center_x - _lift_base.x - BUILDER_PLACE_GRIP.x
 	elif placing or builder.fsm_state == &"walk_to_brick":
 		_builder_brick_target = _brick_center(placed)
+		_set_cargo_size(_placing_brick, placed)
 		placement_center_x = _builder_brick_target.x
 	elif builder.fsm_state == &"return_to_platform" or _finished:
 		placement_center_x = _brick_center(placed - 1).x
@@ -354,18 +389,24 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 		_placement_before = 0.0
 		_placement_after = 0.0
 	_crank_seconds_left = 0.0
-	_deck_end = screen_point(route[-1]).x
-	if builder.fsm_state == &"return_to_platform":
-		var return_column := maxi(0, target - 1)
-		# Count the laid brick before clamping to the row's last column.
-		return_column = clampi(placed - state.row_start - 1, 0, _geometry.row_size(_row) - 1)
-		_deck_end = screen_point(_geometry.builder_to_brick(_row, return_column)[-1]).x
 
 	for owner in _piles:
 		var count := state.stock_count(owner)
 		var pool := _piles[owner]
+		var resources := state.stock(owner)
 		for i in range(pool.size()):
 			pool[i].visible = i < count
+			if i < resources.size():
+				_set_cargo_size(pool[i], resources[i])
+				if owner == Owner.RAW:
+					pool[i].position = _grounded_sprite_position(pool[i],
+						screen_point(state.raw_place(resources[i])))
+				elif owner == Owner.WORKSHOP_OUTPUT:
+					var ground := screen_point(_geometry.workshop_pickup()) + Vector2(i * 36.0, 0)
+					pool[i].position = _grounded_sprite_position(pool[i], ground)
+				elif owner == Owner.FINISHED:
+					var ground := Vector2(pool[i].position.x, _lift_base.y)
+					pool[i].position = _grounded_sprite_position(pool[i], ground)
 
 	var next_unload_slot := {Owner.RAW: state.stock_count(Owner.RAW),
 		Owner.QUARRY_STOCK: state.stock_count(Owner.QUARRY_STOCK),
@@ -375,9 +416,9 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 			_views[id] = _create_worker(id)
 		var view := _views[id]
 		var worker := state.worker(id)
-		var miner_sled := id == Owner.MINER
+		var miner_sled := State.role_for_id(id) == State.Worker.Role.MINER
 		var handles_sled: bool = view.has("transfer_item")
-		view.quarry_haul = _geometry.quarry_slopes != null and (miner_sled or id >= Owner.FIRST_PORTER) \
+		view.quarry_haul = _geometry.quarry_slopes != null and (miner_sled or State.role_for_id(id) == State.Worker.Role.PORTER) \
 			and state.transfer_source(id) == Owner.QUARRY
 		view.cranking = worker.fsm_state == &"operate_lift"
 		if view.cranking:
@@ -386,15 +427,15 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 		if view.has("walker"):
 			var shift := 0.0
 			var gap := point.distance_to(screen_point(_geometry.lift_operator_position()))
-			var waiting_at_crank := id == Owner.MINER and gap < 0.1
+			var waiting_at_crank := State.role_for_id(id) == State.Worker.Role.MINER and gap < 0.1
 			if view.cranking or waiting_at_crank:
 				shift = CRANK_STANCE_SHIFT
 			elif worker.fsm_state in [&"walk_to_lift", &"return_from_lift"]:
 				shift = CRANK_STANCE_SHIFT * (1.0 - smoothstep(0.0, CRANK_STANCE_APPROACH, gap))
 			view.crank_shift_before = shift if snap or view.fresh else view.get("crank_shift_after", 0.0)
 			view.crank_shift_after = shift
-		var placing_here := id == Owner.BUILDER and placing
-		if id == Owner.BUILDER and is_finite(placement_center_x):
+		var placing_here := id == state.active_builder_id and placing
+		if id == state.active_builder_id and is_finite(placement_center_x) and placing:
 			if unloading or hauling_to_lift:
 				var approach := maxf(BUILDER_LIFT_APPROACH, absf(_builder_lift_stance) * 1.6)
 				point.x += _builder_lift_stance * (1.0 - smoothstep(0.0, approach, _lift_base.x - point.x))
@@ -405,16 +446,16 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 					var entry := screen_point(_geometry.pyramid_deck_entry(_row))
 					offset = clampf(offset, 0.0, maxf(0.0, point.x - entry.x))
 				point.x -= offset
-		elif id == Owner.BUILDER and builder.fsm_state == &"walk_to_lift" and _builder_lift_stance != 0.0:
+		elif id == state.active_builder_id and builder.fsm_state == &"walk_to_lift" and _builder_lift_stance != 0.0:
 			var crank_x := screen_point(_geometry.lift_operator_position()).x
 			point.x += _builder_lift_stance * clampf(inverse_lerp(crank_x, _lift_base.x, point.x), 0.0, 1.0)
-		elif id == Owner.BUILDER and builder.fsm_state == &"return_from_lift" and _builder_lift_stance != 0.0:
+		elif id == state.active_builder_id and builder.fsm_state == &"return_from_lift" and _builder_lift_stance != 0.0:
 			var distance := builder.phase_distance_traveled() * PIXELS_PER_UNIT
 			point.x += _builder_lift_stance * (1.0 - clampf(distance / 90.0, 0.0, 1.0))
 		var direction := worker.segment_direction()
 		var mining := false
 		var strike_left := false
-		if id == Owner.MINER:
+		if State.role_for_id(id) == State.Worker.Role.MINER:
 			if worker.fsm_state == &"mine":
 				var targets := state.task_resource_ids(id)
 				mining = not targets.is_empty()
@@ -424,7 +465,7 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 						MINER_STANCE.y)
 					if _geometry.quarry_slopes == null:
 						point = _quarry_impact_point(targets[0]) + stance
-		if id >= Owner.FIRST_PORTER and not view.cranking:
+		if State.role_for_id(id) == State.Worker.Role.PORTER and not view.cranking:
 			point.y += (id - Owner.FIRST_PORTER) * 3
 		view.before = view.after
 		if snap or view.fresh or mining or (id == Owner.LIFT and state.stock_count(id) == 0):
@@ -433,7 +474,7 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 		view.after = point
 		view.active = worker.fsm_state in ACTIONS
 		var count := state.stock_count(id)
-		var composite_dresser := id == Owner.DRESSER and worker.fsm_state == &"process_brick"
+		var composite_dresser := State.role_for_id(id) == State.Worker.Role.DRESSER and worker.fsm_state == &"process_brick"
 		var transferring := false
 		var carrying_brick := false
 		if handles_sled:
@@ -473,12 +514,12 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 				var tow_direction := screen_point(direction).normalized() if snap else travel
 				if not is_zero_approx(tow_direction.x):
 					view.tow_direction = tow_direction
-			view.use_walker = id != Owner.DRESSER and not mining and not placing_here
+			view.use_walker = State.role_for_id(id) != State.Worker.Role.DRESSER and not mining and not placing_here
 			view.walking = worker.remaining_distance > 0.0
-			view.empty_idle = id != Owner.DRESSER and count == 0 and worker.fsm_state in [&"idle", &"exhausted"]
+			view.empty_idle = State.role_for_id(id) != State.Worker.Role.DRESSER and count == 0 and worker.fsm_state in [&"idle", &"exhausted"]
 		var body: Sprite2D = view.body
-		var dresser_resting := id == Owner.DRESSER and worker.fsm_state == &"idle"
-		if id == Owner.DRESSER:
+		var dresser_resting := State.role_for_id(id) == State.Worker.Role.DRESSER and worker.fsm_state == &"idle"
+		if State.role_for_id(id) == State.Worker.Role.DRESSER:
 			body.material = view.rest_material if dresser_resting else null
 		if dresser_resting:
 			_set_worker_frame(body, DRESSER_REST, DRESSER_REST_FEET, view.facing < 0.0)
@@ -491,8 +532,8 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 				strike_left if mining else view.facing < 0.0)
 		elif placing_here or transferring:
 			_set_worker_frame(body, BUILDER_PLACE, BUILDER_PLACE_FEET, false)
-		elif id == Owner.MINER:
-			body.texture = _art[WORKER_ART.get(id, "porter")]
+		elif State.role_for_id(id) == State.Worker.Role.MINER:
+			body.texture = _art[WORKER_ART.get(_visual_id(id), "porter")]
 			body.scale = Vector2.ONE
 			body.offset = Vector2(0, -56)
 			body.flip_h = view.facing < 0.0
@@ -501,11 +542,15 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 			body.rotation = 0.0
 		for i in range(view.items.size()):
 			view.items[i].visible = i < count and not composite_dresser and not placing_here
-		if id == Owner.BUILDER:
+			var cargo_ids := state.stock(id)
+			if i < cargo_ids.size():
+				_set_cargo_size(view.items[i], cargo_ids[i])
+		if State.role_for_id(id) == State.Worker.Role.BUILDER:
 			view.placing = placing_here
 			view.unloading = unloading
 			view.ground_haul = worker.fsm_state == &"walk_to_lift_base"
 		if view.has("sled"):
+			_sync_sled_cargo(state, id, view, carrying_brick)
 			view.sled.visible = transferring or (count > 0 and not placing_here)
 		if handles_sled:
 			view.transferring = transferring
@@ -517,6 +562,63 @@ func sync_state(state: State, snap: bool = false, transfer_facing: Dictionary = 
 				if count > 0 and worker.remaining_distance > 0.0:
 					view.tow_route = worker.movement_route()
 					view.tow_segment = worker.path_segment
+		elif view.has("sled"):
+			if count == 0:
+				view.tow_route = PackedVector2Array()
+			elif worker.movement_route().size() > 1:
+				view.tow_route = worker.movement_route()
+				view.tow_segment = mini(worker.path_segment, view.tow_route.size() - 2)
+
+
+func _sync_sled_cargo(state: State, id: int, view: Dictionary, carrying_brick: bool) -> void:
+	# Include reserved pieces before loading starts. This makes layout independent
+	# of the frame history and reproducible when resuming a transfer mid-animation.
+	var ids := state.stock(id)
+	if view.has("transfer_item"):
+		ids.append_array(state.pickup_targets(id))
+	var brick := carrying_brick or State.role_for_id(id) == State.Worker.Role.BUILDER
+	var base_scale := Vector2.ONE if brick else RAW_STONE_SCALE
+	var texture: Texture2D = _art.brick if brick else _art.stone
+	if not texture.has_meta("cargo_bounds"):
+		texture.set_meta("cargo_bounds", Rect2(texture.get_image().get_used_rect()))
+	var bounds: Rect2 = texture.get_meta("cargo_bounds")
+	var width := bounds.size.x * base_scale.x
+	var total_width := 0.0
+	var largest := 1.0
+	for resource_id in ids:
+		var size := float(_geometry.block_size_for_resource(resource_id))
+		largest = maxf(largest, size)
+		total_width += width * size
+	total_width += SLED_CARGO_GAP * maxi(0, ids.size() - 1)
+	# Keep the established stacked layout for the original, all-1x1 cargo.
+	var k := maxf(largest, total_width / SLED_DECK_WIDTH) if largest > 1.0 else 1.0
+	view.sled_factor = k
+	view.sled.scale = SLED_BASE_SCALE * k
+	var cursor := -total_width * 0.5
+	for index in range(view.items.size()):
+		var item: Sprite2D = view.items[index]
+		item.texture = texture
+		item.scale = base_scale / SLED_BASE_SCALE
+		if index < ids.size():
+			_set_cargo_size(item, ids[index])
+		item.scale /= k
+		item.position = item.get_meta("sled_base_position")
+		if largest > 1.0 and index < ids.size():
+			var size := float(_geometry.block_size_for_resource(ids[index]))
+			var center := bounds.get_center() - texture.get_size() * 0.5
+			var bottom := bounds.end.y - texture.get_height() * 0.5
+			var cargo_scale := base_scale * size
+			item.position = Vector2(cursor + width * size * 0.5 - center.x * cargo_scale.x,
+				SLED_DECK_Y * k - bottom * cargo_scale.y) / view.sled.scale
+			cursor += width * size + SLED_CARGO_GAP
+
+
+func _sled_distance(view: Dictionary, base: float = PORTER_SLED_DISTANCE) -> float:
+	var k: float = view.get("sled_factor", 1.0)
+	# Baseline hand is 22 px behind the worker; the remaining horizontal span
+	# grows by half for each extra size unit. At k=1 this is exactly base.
+	var span := maxf(0.0, base - WALLPAPER_SLED_HITCH.x - 22.0)
+	return base + (k - 1.0) * (WALLPAPER_SLED_HITCH.x + span * 0.5)
 
 
 func transfer_facing_snapshot() -> Dictionary:
@@ -545,7 +647,7 @@ func _legacy_transfer_facing(state: State, id: int) -> float:
 	# leaves the view facing in the direction of the preceding walk.
 	var pickup_x := state.worker(id).position.x
 	var mined := state.mined_count()
-	if id == Owner.MINER:
+	if State.role_for_id(id) == State.Worker.Role.MINER:
 		for resource_id in range(mined - 1, -1, -1):
 			var dx := pickup_x - _geometry.miner_work_position(resource_id, mined).x
 			if not is_zero_approx(dx):
@@ -591,11 +693,15 @@ func _sync_porter_transfer(state: State, id: int, view: Dictionary, ready_stones
 	else:
 		resource_id = state.stock(id)[-1]
 		var destination := Owner.RAW
-		if id == Owner.MINER:
+		if State.role_for_id(id) == State.Worker.Role.MINER:
 			destination = Owner.QUARRY_STOCK
 		elif carrying_brick:
 			destination = Owner.FINISHED
 		ground = _piles[destination][next_unload_slot[destination]]
+		if destination == Owner.RAW:
+			_set_cargo_size(ground, resource_id)
+			ground.position = _grounded_sprite_position(ground,
+				screen_point(state.raw_place(resource_id)))
 		next_unload_slot[destination] += 1
 		slot.hide()
 	var work := worker.phase_work()
@@ -605,7 +711,7 @@ func _sync_porter_transfer(state: State, id: int, view: Dictionary, ready_stones
 	var same_transfer: bool = view.transfer_id == resource_id and view.loading == loading
 	if snap or not same_transfer:
 		view.sled.rotation = 0.0
-		view.sled.position = Vector2(-view.facing * PORTER_SLED_DISTANCE, 0)
+		view.sled.position = Vector2(-view.facing * _sled_distance(view), 0)
 		view.sled.flip_h = view.facing < 0.0
 	view.transfer_before = progress if snap else (view.transfer_after if same_transfer else 0.0)
 	view.transfer_after = progress
@@ -617,6 +723,7 @@ func _sync_porter_transfer(state: State, id: int, view: Dictionary, ready_stones
 	view.transfer_sled_scale = slot.scale * view.sled.scale
 	var item: Sprite2D = view.transfer_item
 	item.texture = slot.texture
+	_set_cargo_size(item, resource_id)
 
 
 func _render_porter_transfer(view: Dictionary, fraction: float) -> void:
@@ -625,7 +732,7 @@ func _render_porter_transfer(view: Dictionary, fraction: float) -> void:
 	var root: Node2D = view.root
 	var sled: Sprite2D = view.sled
 	var ground: Vector2 = view.transfer_ground - root.position
-	var on_sled: Vector2 = sled.position + view.transfer_sled
+	var on_sled: Vector2 = sled.position + view.transfer_sled.rotated(sled.rotation)
 	var progress := lerpf(view.transfer_before, view.transfer_after, fraction)
 	# Unloading runs the same reach, lift and set-down in reverse.
 	var across := smoothstep(0.06, 0.94, progress if view.loading else 1.0 - progress)
@@ -651,6 +758,44 @@ func _render_porter_transfer(view: Dictionary, fraction: float) -> void:
 	body.position.x = item.position.x - grip.x
 
 
+func _sync_scaffold_visual(state: State) -> void:
+	if _scaffold_revision == state.placed_count() and _scaffold_row == state.current_row:
+		return
+	_scaffold_revision = state.placed_count()
+	_scaffold_row = state.current_row
+	for child in _scaffold_root.get_children():
+		child.free()
+	var seen := {}
+	for scaffold: Dictionary in state.scaffold_sections:
+		for section: Dictionary in scaffold.sections:
+			if seen.has(section.id):
+				continue
+			seen[section.id] = true
+			_scaffold_line(Vector2(section.x0, section.y),
+				Vector2(section.x1, section.y), 10.0, Color("#795139"))
+		for post: Dictionary in scaffold.posts:
+			if seen.has(post.id):
+				continue
+			seen[post.id] = true
+			var x := (float(post.x0) + float(post.x1)) * 0.5
+			_scaffold_line(Vector2(x, post.y0), Vector2(x, post.y1),
+				maxf(5.0, (float(post.x1) - float(post.x0)) * PIXELS_PER_UNIT),
+				Color("#694b35"))
+		for transition: Dictionary in scaffold.transitions:
+			if seen.has(transition.id):
+				continue
+			seen[transition.id] = true
+			_scaffold_line(transition["from"], transition["to"], 8.0, Color("#ae7b47"))
+
+
+func _scaffold_line(start: Vector2, finish: Vector2, width: float, color: Color) -> void:
+	var line := Line2D.new()
+	line.width = width
+	line.default_color = color
+	line.points = PackedVector2Array([screen_point(start), screen_point(finish)])
+	_scaffold_root.add_child(line)
+
+
 func capture_tick(state: State) -> void:
 	_platform_before = _platform_after
 	sync_state(state)
@@ -659,7 +804,7 @@ func capture_tick(state: State) -> void:
 func render_frame(fraction: float, game_seconds: float) -> void:
 	var point := _platform_before.lerp(_platform_after, fraction)
 	_platform.position = point
-	_platform.visible = _row > 0 or _rebuilding
+	_platform.visible = false # The scaffold deck is the landing; no separate platform sprite.
 	var cranking := _crank_seconds_left > 0.0
 	if cranking:
 		var duration := _geometry.lift_seconds(_row)
@@ -679,21 +824,16 @@ func render_frame(fraction: float, game_seconds: float) -> void:
 		_pulley.position.y = cable_y
 	_mast.position = Vector2(lift_base.x, (_pulley.position.y + lift_base.y) * 0.5)
 	_mast.scale.y = (lift_base.y - _pulley.position.y) / 64.0
-	var deck_y := point.y - (_brick_height if _row > 0 else 0.0)
-	_deck.visible = _row > 0 and (not _finished or _pyramid_ramp != null) and not _rebuilding
-	var deck_start := point.x - (124.0)
+	_scaffold_root.visible = not _rebuilding
+	_deck.visible = false
 	if _pyramid_ramp != null:
 		var entry := screen_point(_geometry.pyramid_deck_entry(_row))
-		deck_start = entry.x
-		deck_y = entry.y
 		var tip := entry
 		if _rebuilding:
 			tip = screen_point(_geometry.platform(_row + 1))
-		_pyramid_ramp.visible = _row > 0 or _rebuilding
+		_pyramid_ramp.visible = _rebuilding
 		var thickness := Vector2(0, 12)
 		_pyramid_ramp.polygon = PackedVector2Array([lift_base, tip, tip + thickness, lift_base + thickness])
-	_deck.position = Vector2((deck_start + _deck_end) * 0.5, deck_y + 7)
-	_deck.scale.x = maxf(0, _deck_end - deck_start) / 64.0
 	if _platform_pile_anchor != point:
 		_platform_pile_anchor = point
 		var brick := _art.brick.get_size()
@@ -704,40 +844,27 @@ func render_frame(fraction: float, game_seconds: float) -> void:
 		var view := _views[id]
 		var root: Node2D = view.root
 		root.position = view.before.lerp(view.after, fraction)
-		var on_ramp := false
-		if id == Owner.BUILDER and _pyramid_ramp != null and not is_equal_approx(view.before.y, view.after.y):
-			# A tick can straddle either end of the incline. Follow the surface
-			# through that joint instead of cutting the corner with a chord.
-			var step := screen_point(_geometry.pyramid_ramp_step())
-			var y := lift_base.y + (root.position.x - lift_base.x) * step.y / step.x
-			var high := minf(view.before.y, view.after.y)
-			var low := maxf(view.before.y, view.after.y)
-			root.position.y = clampf(y, high, low)
-			on_ramp = y >= high and y <= low
 		if view.quarry_haul:
-			root.position.y = _quarry_surface_screen_y(root.position.x, id == Owner.MINER)
-		elif id == Owner.MINER and _geometry.quarry_slopes != null:
+			root.position.y = _quarry_surface_screen_y(root.position.x, State.role_for_id(id) == State.Worker.Role.MINER)
+		elif State.role_for_id(id) == State.Worker.Role.MINER and _geometry.quarry_slopes != null:
 			var feet := root.position * Vector2(1, -1) / PIXELS_PER_UNIT
 			root.position = screen_point(_geometry.quarry_slopes.project(feet, _mined))
 		var transferring: bool = view.get("transferring", false)
 		var walker: WorkerWalk = view.get("walker")
 		var pulling := false
 		if view.has("sled") and view.sled.visible and not transferring:
-			pulling = id != Owner.BUILDER or view.ground_haul or root.position.y <= deck_y + 0.5
+			pulling = true
 		if walker != null:
 			var crank_arrival_tolerance := 0.1
 			var at_crank: bool = view.cranking and root.position.distance_to(view.after) < crank_arrival_tolerance
 			root.position.x += lerpf(view.crank_shift_before, view.crank_shift_after, fraction)
 			var travel: Vector2 = view.walk_travel
-			if id == Owner.BUILDER and _pyramid_ramp != null and travel != Vector2.ZERO:
-				var tangent := screen_point(_geometry.pyramid_ramp_step()).normalized()
-				travel = (tangent if on_ramp else Vector2.RIGHT) * signf(travel.x)
 			var moving := travel != Vector2.ZERO
 			# Finish the displayed movement before switching to the new action.
 			var in_step: bool = moving and (view.walking or fraction < 1.0)
 			var resting: bool = view.empty_idle and not in_step
-			var moving_dresser: bool = id == Owner.DRESSER and (view.walking or view.cranking)
-			if resting and id >= Owner.FIRST_PORTER:
+			var moving_dresser: bool = State.role_for_id(id) == State.Worker.Role.DRESSER and (view.walking or view.cranking)
+			if resting and State.role_for_id(id) == State.Worker.Role.PORTER:
 				pulling = false
 			walker.visible = not transferring \
 				and (view.use_walker or view.empty_idle or moving_dresser or at_crank or (in_step and not view.get("placing", false)))
@@ -756,9 +883,9 @@ func render_frame(fraction: float, game_seconds: float) -> void:
 							stride_weight = minf(stride_weight, 1.0 - smoothstep(0.0, 1.0, fraction))
 					walker.pose(lerpf(view.walk_start, view.walk_end, fraction),
 						travel if in_step else Vector2.ZERO, view.facing, pulling, stride_weight)
-		if id == Owner.DRESSER and view.body.material != null:
+		if State.role_for_id(id) == State.Worker.Role.DRESSER and view.body.material != null:
 			view.rest_material.set_shader_parameter("phase", animation_seconds * TAU / 3.8)
-		if id == Owner.BUILDER:
+		if id == _active_builder_id:
 			_placing_brick.visible = view.placing
 			if view.placing:
 				var progress := lerpf(_placement_before, _placement_after, fraction)
@@ -800,10 +927,11 @@ func _update_sled(id: int, view: Dictionary, pulling: bool, walker: WorkerWalk) 
 	var sled: Sprite2D = view.sled
 	var tether: Line2D = view.tether
 	var distance := PORTER_SLED_DISTANCE
-	if id == Owner.BUILDER:
+	if State.role_for_id(id) == State.Worker.Role.BUILDER:
 		# The interpolated feet can still be climbing after the model enters the deck.
 		sled.self_modulate.a = 1.0 if pulling else 0.0
 		distance = 68.0 if pulling else 20.0
+	distance = _sled_distance(view, distance)
 	tether.visible = pulling
 	var direction: Vector2 = view.tow_direction if pulling else Vector2(view.facing, 0)
 	var facing := signf(direction.x)
@@ -818,13 +946,13 @@ func _update_sled(id: int, view: Dictionary, pulling: bool, walker: WorkerWalk) 
 		var worker_x: float = view.root.position.x
 		var center_x := worker_x - facing * distance
 		var reach := sled.texture.get_width() * sled.scale.x * 0.4
-		var left_y := _quarry_surface_screen_y(center_x - reach, id == Owner.MINER)
-		var right_y := _quarry_surface_screen_y(center_x + reach, id == Owner.MINER)
+		var left_y := _quarry_surface_screen_y(center_x - reach, State.role_for_id(id) == State.Worker.Role.MINER)
+		var right_y := _quarry_surface_screen_y(center_x + reach, State.role_for_id(id) == State.Worker.Role.MINER)
 		sled.position = Vector2(center_x - worker_x, (left_y + right_y) * 0.5 - view.root.position.y)
 		sled.rotation = Vector2(2.0 * reach, right_y - left_y).angle()
 	elif not route.is_empty():
-		_fit_sled_to_route(sled, route, view.tow_segment, view.root.position.x, facing, distance)
-	var hitch_offset := WALLPAPER_SLED_HITCH
+		_fit_sled_to_route(sled, route, view.tow_segment, view.root.position, facing, distance)
+	var hitch_offset: Vector2 = WALLPAPER_SLED_HITCH * view.get("sled_factor", 1.0)
 	var hitch := sled.position + Vector2(facing * hitch_offset.x, hitch_offset.y).rotated(sled.rotation)
 	var hand := walker.hand_position if walker.visible else Vector2(-view.facing * 22, -37)
 	tether.set_point_position(0, hand)
@@ -838,14 +966,25 @@ func _quarry_surface_screen_y(screen_x: float, to_quarry_stock := false) -> floa
 
 
 func _fit_sled_to_route(sled: Sprite2D, route: PackedVector2Array, segment: int,
-		worker_x: float, facing: float, distance: float) -> void:
-	var center_x := worker_x - facing * distance
+		worker_position: Vector2, facing: float, distance: float) -> void:
+	var center_x := worker_position.x - facing * distance
 	var reach := sled.texture.get_width() * sled.scale.x * 0.4
 	var left_y := _tow_surface_y(route, segment, facing, center_x - reach)
 	var right_y := _tow_surface_y(route, segment, facing, center_x + reach)
-	var worker_y := _tow_surface_y(route, segment, facing, worker_x)
-	sled.position = Vector2(center_x - worker_x, (left_y + right_y) * 0.5 - worker_y)
+	sled.position = Vector2(center_x - worker_position.x,
+		(left_y + right_y) * 0.5 - worker_position.y)
 	sled.rotation = Vector2(2.0 * reach, right_y - left_y).angle()
+	# The runner overhangs its two contact samples on a short, steep scaffold.
+	# Keep its full lower edge above the same surface used to tilt it.
+	var half_width := sled.texture.get_width() * sled.scale.x * 0.5
+	var bottom := (sled.texture.get_height() * 0.5 + sled.offset.y) * sled.scale.y
+	var penetration := 0.0
+	for index in range(17):
+		var local := Vector2(lerpf(-half_width, half_width, float(index) / 16.0), bottom)
+		var edge := local.rotated(sled.rotation)
+		var surface_y := _tow_surface_y(route, segment, facing, center_x + edge.x)
+		penetration = maxf(penetration, worker_position.y + sled.position.y + edge.y - surface_y)
+	sled.position.y -= penetration
 
 
 func _tow_surface_y(route: PackedVector2Array, segment: int, facing: float, screen_x: float) -> float:
@@ -885,7 +1024,8 @@ func play_production(events: Array[Dictionary]) -> void:
 		if event.state == &"mine":
 			sprite.position = _quarry_impact_point(event.resource_id)
 		elif event.state == &"place_brick":
-			sprite.position = _brick_center(event.placement_index) - Vector2(0, _brick_height * 0.5)
+			var size := _geometry.block_size_for_resource(event.placement_index)
+			sprite.position = _brick_center(event.placement_index) - Vector2(0, _brick_height * size * 0.5)
 		else:
 			var worker: Node2D = _views[event.worker_id].root
 			sprite.position = worker.position + Vector2(22, -22)
@@ -899,6 +1039,14 @@ func play_production(events: Array[Dictionary]) -> void:
 		tween.chain().tween_callback(sprite.hide)
 
 
+static func _visual_id(id: int) -> int:
+	match State.role_for_id(id):
+		State.Worker.Role.MINER: return Owner.MINER
+		State.Worker.Role.DRESSER: return Owner.DRESSER
+		State.Worker.Role.BUILDER: return Owner.BUILDER
+	return id
+
+
 func _create_worker(id: int) -> Dictionary:
 	var root := Node2D.new()
 	workers.add_child(root)
@@ -907,12 +1055,12 @@ func _create_worker(id: int) -> Dictionary:
 		body = Sprite2D.new()
 		root.add_child(body)
 	else:
-		body = _sprite("lift_cradle" if id == Owner.LIFT else WORKER_ART.get(id, "porter"), root)
+		body = _sprite("lift_cradle" if id == Owner.LIFT else WORKER_ART.get(_visual_id(id), "porter"), root)
 	body.offset = Vector2(0, 15 if id == Owner.LIFT else -56)
 	var items: Array[Sprite2D] = []
 	var view := {"root": root, "body": body, "items": items, "fresh": true,
 		"before": Vector2.ZERO, "after": Vector2.ZERO, "facing": 1.0, "active": false}
-	if id == Owner.DRESSER:
+	if State.role_for_id(id) == State.Worker.Role.DRESSER:
 		var rest_material := ShaderMaterial.new()
 		rest_material.shader = DRESSER_REST_SHADER
 		view.rest_material = rest_material
@@ -923,7 +1071,7 @@ func _create_worker(id: int) -> Dictionary:
 		root.add_child(walker)
 		view.walker = walker
 		view.walk_end = 0.5
-	if id >= Owner.FIRST_PORTER or (id in [Owner.BUILDER, Owner.MINER]):
+	if State.role_for_id(id) == State.Worker.Role.PORTER or (State.role_for_id(id) in [State.Worker.Role.BUILDER, State.Worker.Role.MINER]):
 		var tether := Line2D.new()
 		tether.width = 3
 		tether.default_color = Color("#694b35")
@@ -931,18 +1079,18 @@ func _create_worker(id: int) -> Dictionary:
 		root.add_child(tether)
 		view.tether = tether
 		var sled := _sprite("sled", root)
-		sled.scale = Vector2(0.85, 0.45)
+		sled.scale = SLED_BASE_SCALE
 		sled.offset.y = -16
 		view.sled = sled
 		view.tow_direction = Vector2.RIGHT
 		view.tow_route = PackedVector2Array()
-		if id == Owner.BUILDER:
+		if State.role_for_id(id) == State.Worker.Role.BUILDER:
 			var brick := _sprite("brick", sled)
 			brick.position = Vector2(0, -55)
 			brick.scale = Vector2(1.0 / sled.scale.x, 1.0 / sled.scale.y)
 			items.append(brick)
 		else:
-			var capacity := 1 if id == Owner.MINER else State.MAX_PORTER_CAPACITY
+			var capacity := 1 if State.role_for_id(id) == State.Worker.Role.MINER else State.MAX_PORTER_CAPACITY
 			for i in range(capacity):
 				var stone := _sprite("stone", sled)
 				stone.scale = RAW_STONE_SCALE / sled.scale
@@ -952,7 +1100,7 @@ func _create_worker(id: int) -> Dictionary:
 				var base_y := -74.0
 				stone.position = Vector2((column - 1) * PORTER_SLED_COLUMN_SPACING,
 					base_y - row * PORTER_SLED_ROW_RISE)
-				if id == Owner.MINER:
+				if State.role_for_id(id) == State.Worker.Role.MINER:
 					stone.position.x = 0.0
 				items.append(stone)
 			view.transfer_id = -1
@@ -960,15 +1108,18 @@ func _create_worker(id: int) -> Dictionary:
 			view.transfer_item = _sprite("stone", root)
 			root.move_child(body, -1)
 	else:
-		var item := _sprite("stone" if id in [Owner.MINER, Owner.DRESSER] else "brick", root)
+		var item := _sprite("stone" if State.role_for_id(id) in [State.Worker.Role.MINER, State.Worker.Role.DRESSER] else "brick", root)
 		item.position = Vector2(24, -43)
 		if id == Owner.LIFT:
 			item.position = Vector2(0, -23)
 			if _geometry.has_upper_delivery():
 				item.position = Vector2(0, -14)
-		if id == Owner.BUILDER:
+		if State.role_for_id(id) == State.Worker.Role.BUILDER:
 			item.scale = Vector2.ONE * 0.75
 		items.append(item)
+	if view.has("sled"):
+		for item: Sprite2D in items:
+			item.set_meta("sled_base_position", item.position)
 	return view
 
 
@@ -1073,21 +1224,50 @@ func _quarry_impact_point(id: int) -> Vector2:
 
 
 func _make_brick_tiles(size: Vector2i, origin: Vector2) -> void:
-	var atlas := TileSetAtlasSource.new()
-	atlas.texture = _art.brick
-	atlas.texture_region_size = Vector2i(atlas.texture.get_size())
-	atlas.create_tile(Vector2i.ZERO)
-	atlas.create_alternative_tile(Vector2i.ZERO, 1)
-	atlas.get_tile_data(Vector2i.ZERO, 1).modulate = Color(0.85, 0.75, 0.62, 0.18)
 	var tiles := TileSet.new()
 	tiles.tile_size = size
-	tiles.add_source(atlas, 0)
+	for variant in range(_brick_variants.size()):
+		var atlas := TileSetAtlasSource.new()
+		atlas.texture = _brick_variants[variant]
+		atlas.texture_region_size = Vector2i(atlas.texture.get_size())
+		atlas.create_tile(Vector2i.ZERO)
+		atlas.create_alternative_tile(Vector2i.ZERO, 1)
+		atlas.get_tile_data(Vector2i.ZERO, 1).modulate = Color(0.85, 0.75, 0.62, 0.18)
+		tiles.add_source(atlas, variant)
 	pyramid.tile_set = tiles
 	pyramid.position = origin
 
 
 func _brick_center(placement_index: int) -> Vector2:
-	return pyramid.position + pyramid.map_to_local(_brick_cells[placement_index])
+	var remaining := placement_index
+	var row := 0
+	while row < _geometry.row_count() and remaining >= _geometry.row_size(row):
+		remaining -= _geometry.row_size(row)
+		row += 1
+	if row >= _geometry.row_count():
+		return Vector2.ZERO
+	var origin: Vector2 = _geometry.brick_origin(row, remaining)
+	var extent := _geometry.brick_extent(row, remaining) * PIXELS_PER_UNIT
+	return screen_point(origin) + Vector2(extent.x * 0.5, -extent.y * 0.5)
+
+
+func _grounded_sprite_position(sprite: Sprite2D, ground: Vector2) -> Vector2:
+	var texture := sprite.texture
+	if not texture.has_meta("cargo_bounds"):
+		texture.set_meta("cargo_bounds", Rect2(texture.get_image().get_used_rect()))
+	var bounds: Rect2 = texture.get_meta("cargo_bounds")
+	var bottom := bounds.end.y - texture.get_height() * 0.5
+	return ground - Vector2(0, bottom * absf(sprite.scale.y))
+
+
+func _set_cargo_size(sprite: Sprite2D, resource_id: int) -> void:
+	var size := _geometry.block_size_for_resource(resource_id)
+	var bases: Dictionary = sprite.get_meta("size_base_scales", {})
+	var key := sprite.texture.resource_path
+	if not bases.has(key):
+		bases[key] = sprite.scale
+		sprite.set_meta("size_base_scales", bases)
+	sprite.scale = bases[key] * size
 
 
 func _sprite(name: String, parent: Node2D) -> Sprite2D:
