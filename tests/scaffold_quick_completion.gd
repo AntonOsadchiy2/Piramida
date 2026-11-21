@@ -2,14 +2,7 @@ extends "res://tests/wallpaper_cycles.gd"
 
 # Exercise the production completion path on a small, known-buildable blueprint.
 const Blueprint = preload("res://scripts/domain/blueprint.gd")
-const BLOCKS := [
-	{"x": 0, "y": 0, "type": "stone", "size": 4},
-	{"x": 4, "y": 0, "type": "stone", "size": 2},
-	{"x": 6, "y": 0, "type": "stone", "size": 1},
-	{"x": 6, "y": 1, "type": "stone", "size": 1},
-	{"x": 4, "y": 2, "type": "stone", "size": 2},
-	{"x": 0, "y": 4, "type": "stone", "size": 4},
-]
+const BLUEPRINT_PATH := "res://tests/fixtures/completion_blueprint.json"
 const MAX_TICKS := 4000
 
 
@@ -22,8 +15,12 @@ func _run() -> void:
 		quit(1)
 		return
 	var balance: Dictionary = wallpaper._balance.duplicate(true)
-	var checked: Dictionary = Blueprint.validate({"version": 2, "blocks": BLOCKS})
+	var checked := Blueprint.validate(JSON.parse_string(FileAccess.get_file_as_string(BLUEPRINT_PATH)))
 	_check(not checked.has("error"), "Small blueprint is valid")
+	if checked.has("error"):
+		wallpaper.free()
+		quit(1)
+		return
 	balance.world["blueprintBlocks"] = checked.blocks
 	balance.world.pyramidRows = 4
 	var save_path: String = wallpaper._temporary_save_dir.get_current_dir().path_join("small-save.json")
@@ -32,7 +29,7 @@ func _run() -> void:
 	var fresh: Dictionary = wallpaper.simulation.to_dict()
 	var overview: Array = _camera_view(wallpaper)
 	var counts: Array = _scene_counts(wallpaper)
-	_check(wallpaper.simulation.state.target_count() == BLOCKS.size(), "Six-block target is active")
+	_check(wallpaper.simulation.state.target_count() == checked.blocks.size(), "Small blueprint target is active")
 	var before_final_tick := 0
 	var ticks := 0
 	for tick in range(MAX_TICKS):
@@ -44,13 +41,13 @@ func _run() -> void:
 		if tick % 32 == 0:
 			await process_frame
 	var state: State = wallpaper.simulation.state
-	_check(state.finished and state.placed_count() == BLOCKS.size(), "Normal production completes all six blocks")
+	_check(state.finished and state.placed_count() == checked.blocks.size(), "Normal production completes the small blueprint")
 	_check(state.validate().is_empty(), "Finished ownership and reservations are valid")
 	if not state.finished:
 		var builder := state.worker(state.active_builder_id)
-		print("[SCENARIO] FAIL small-completion tick=%d placed=%d row=%d phase=%s pos=%s waiting=%s delivery=%s work=%s" % [
+		print("[SCENARIO] FAIL small-completion tick=%d placed=%d row=%d phase=%s pos=%s delivery=%s work=%s" % [
 			ticks, state.placed_count(), state.current_row, builder.fsm_state,
-			str(builder.position), str(wallpaper.simulation._construction.waiting_snapshot()),
+			str(builder.position),
 			str(state.delivery_point), str(wallpaper.simulation._construction._placement_point())])
 		wallpaper.free()
 		quit(1)
@@ -93,6 +90,6 @@ func _run() -> void:
 			await process_frame
 			_check(_camera_view(wallpaper) == overview, "Overview stays stable after reset frame %d" % frame)
 	print("[SCENARIO] %s small-completion ticks=%d placed=%d hold=5000ms" % [
-		"PASS" if failures == 0 else "FAIL", ticks, BLOCKS.size()])
+		"PASS" if failures == 0 else "FAIL", ticks, checked.blocks.size()])
 	wallpaper.free()
 	quit(int(failures > 0))

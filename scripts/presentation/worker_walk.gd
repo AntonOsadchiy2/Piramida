@@ -2,6 +2,8 @@ extends Node2D
 ## Animate the limbs of the side-view worker around a planted foot.
 
 const ART := preload("res://assets/sprites/worker-walk.png")
+const HEIGHT_FACTOR := 0.75
+const HUMAN_SCALE := 1.25 * HEIGHT_FACTOR
 const STEP_LENGTH := 42.0
 const CLIMB_STEP_LENGTH := 20.0
 const LANDING_REACH := 0.30

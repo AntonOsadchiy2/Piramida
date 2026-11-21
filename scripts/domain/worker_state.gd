@@ -191,15 +191,19 @@ func phase_distance_traveled() -> float:
 
 
 func relocate_waypoints(positions: Dictionary[Vector2, Vector2]) -> void:
+	transform_waypoints(func(point: Vector2) -> Vector2: return positions.get(point, point))
+
+
+func transform_waypoints(transform: Callable) -> void:
 	var routes: Array[PackedVector2Array] = []
-	var new_position: Vector2 = positions.get(position, position)
+	var new_position: Vector2 = transform.call(position)
 	var changed := new_position != position
 	for phase in _phases:
 		if phase.route.is_empty():
 			continue
 		var route := phase.route.duplicate()
 		for index in range(route.size()):
-			var target: Vector2 = positions.get(route[index], route[index])
+			var target: Vector2 = transform.call(route[index])
 			changed = changed or route[index] != target
 			route[index] = target
 		routes.append(route)
@@ -207,12 +211,19 @@ func relocate_waypoints(positions: Dictionary[Vector2, Vector2]) -> void:
 		move_to_new_layout(routes, new_position)
 
 
-func remap_saved_routes(map_route: Callable) -> bool:
+func finish_trip_at(destination: Vector2) -> void:
+	position = destination
+	_phases.clear()
+	route_waiting = false
+	_start_phase()
+
+
+func remap_saved_routes(map_route: Callable, work_position: Vector2) -> bool:
 	var routes: Array[PackedVector2Array] = []
 	for phase in _phases:
 		if not phase.route.is_empty():
 			routes.append(map_route.call(phase.state, phase.route))
-	return routes.is_empty() or move_to_new_layout(routes, position)
+	return move_to_new_layout(routes, work_position)
 
 
 # Rebuild saved movement on a new layout, retaining the fraction of the active walk.
@@ -330,7 +341,7 @@ func restore_timing(data: Dictionary, allowed_states: Array) -> bool:
 		var moving := phase.state in [&"move_to_cell", &"lift_brick", &"walk_to_brick",
 			&"return_to_platform", &"climb_to_platform", &"join_platform", &"walk_to_pickup", &"walk_to_storage",
 			&"walk_to_workshop", &"walk_to_lift_base", &"walk_to_lift", &"return_from_lift",
-			&"return_to_raw_storage", &"return_to_quarry"]
+			&"return_to_raw_storage", &"return_to_quarry", &"walk_to_quarry_stock", &"return_to_workshop"]
 		if moving == phase.route.is_empty() or (moving and phase.work != 0.0):
 			return false
 		_phases.append(phase)

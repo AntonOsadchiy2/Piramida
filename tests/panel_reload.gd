@@ -27,6 +27,69 @@ func _write_text(path: String, value: String) -> void:
 	file.close()
 
 
+func _test_blueprint_library(wallpaper) -> void:
+	const DIRECTORY := "user://wallpaper/blueprints"
+	const SELECTION := "user://wallpaper/blueprint-selection.txt"
+	const TEXTURES := "user://wallpaper/textures"
+	for directory in [DIRECTORY, TEXTURES]:
+		assert(DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory)) == OK)
+	var raw := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	var finished := Image.create(11, 7, false, Image.FORMAT_RGBA8)
+	raw.fill(Color.RED)
+	finished.fill(Color.BLUE)
+	var raw_hash := "a".repeat(64)
+	var finished_hash := "b".repeat(64)
+	assert(raw.save_png(TEXTURES.path_join(raw_hash + ".png")) == OK)
+	assert(finished.save_png(TEXTURES.path_join(finished_hash + ".png")) == OK)
+	var blueprint := {"version": 3, "blocks": [
+		{"x": 0, "y": 0, "type": "stone", "size": 1,
+			"rawTexture": raw_hash, "finishedTexture": finished_hash},
+		{"x": 1, "y": 0, "type": "stone", "size": 2},
+	]}
+	var original_key: String = wallpaper._profile_key
+	var original_time: float = wallpaper.simulation.elapsed_seconds()
+	_write_json(DIRECTORY.path_join("b-Красная башня.json"), blueprint)
+	_write_json(DIRECTORY.path_join("b-Вторая башня.json"), blueprint)
+	_write_text(SELECTION, "b-Красная башня")
+	wallpaper._poll_tray_requests()
+	var first_key: String = wallpaper._profile_key
+	assert(first_key != original_key)
+	assert(wallpaper.simulation.state.target_count() == 2)
+	assert(wallpaper.simulation.state.geometry.block_size_for_resource(1) == 2)
+	var world = wallpaper.world
+	assert(world._cargo_texture(0, 1, true).get_image().get_pixel(0, 0) == Color.RED)
+	assert(world._cargo_texture(0, 1, false).get_image().get_pixel(0, 0) == Color.BLUE)
+	assert(world._cargo_texture(1, 2, true) == world._art["stone_2x2"])
+	assert(world._large_brick_sprites[0].texture.get_image().get_pixel(0, 0) == Color.BLUE)
+	assert(is_equal_approx(world._large_brick_sprites[0].modulate.a, 0.18))
+	for tick in range(10000):
+		var events: Array[Dictionary] = wallpaper.simulation.step_simulation()
+		world.capture_tick(wallpaper.simulation.state)
+		world.play_production(events)
+		if wallpaper.simulation.state.placed_count() > 0:
+			break
+	assert(wallpaper.simulation.state.placed_count() == 1)
+	assert(is_equal_approx(world._large_brick_sprites[0].modulate.a, 1.0))
+	var first_time: float = wallpaper.simulation.elapsed_seconds()
+	_write_text(SELECTION, "b-Вторая башня")
+	wallpaper._poll_tray_requests()
+	assert(wallpaper._profile_key != first_key)
+	assert(is_zero_approx(wallpaper.simulation.elapsed_seconds()))
+	_write_text(SELECTION, "b-Красная башня")
+	wallpaper._poll_tray_requests()
+	assert(wallpaper._profile_key == first_key)
+	assert(is_equal_approx(wallpaper.simulation.elapsed_seconds(), first_time))
+	_write_text(SELECTION, "default")
+	wallpaper._poll_tray_requests()
+	assert(wallpaper._profile_key == "")
+	assert(wallpaper.simulation.state.target_count() == 900)
+	_write_text(SELECTION, "legacy")
+	wallpaper._poll_tray_requests()
+	assert(wallpaper._profile_key == original_key)
+	assert(is_equal_approx(wallpaper.simulation.elapsed_seconds(), original_time))
+	assert(DirAccess.remove_absolute(ProjectSettings.globalize_path(SELECTION)) == OK)
+
+
 func _run() -> void:
 	assert(DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://wallpaper")) == OK)
 	var wallpaper = WallpaperScene.instantiate()
@@ -103,6 +166,7 @@ func _run() -> void:
 	assert(backup.status == SaveService.Status.OK)
 	assert(primary.simulation.to_dict() == expected_start)
 	assert(backup.simulation.to_dict() == expected_start)
+	_test_blueprint_library(wallpaper)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://wallpaper/blueprint.json"))
 	wallpaper._reload_panel_data()
 	assert(wallpaper._profile_key == "")

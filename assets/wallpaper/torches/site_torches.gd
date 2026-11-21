@@ -16,7 +16,7 @@ class Torch:
 	var flame: ColorRect
 	var light: PointLight2D
 	var burning := false
-	var tending := false
+	var tending_patrol := -1
 	var strength := 0.0
 	var phase: float
 
@@ -54,7 +54,7 @@ func attach_to_patrol(overseer: Overseer, geometry: Presenter.Geometry,
 			add_child(torch.stand)
 			_torches.append(torch)
 	for torch in _torches:
-		torch.tending = false
+		torch.tending_patrol = -1
 	overseer.stop_action = _tend
 
 
@@ -73,16 +73,15 @@ func update_darkness(night_weight: float) -> void:
 		_want_fire = false
 
 
-func _tend(index: int, order_time: float) -> Vector2:
-	var torch := _torches[index]
+func _tend(index: int, order_time: float, patrol_number: int) -> Vector2:
 	if order_time < 0.0:
-		torch.tending = false
 		return Vector2.INF
+	var torch := _torches[index]
 	if torch.burning != _want_fire:
-		torch.tending = true
+		torch.tending_patrol = patrol_number
 		if order_time >= TEND_SECONDS:
 			torch.burning = _want_fire
-	return torch.stand.to_global(WICK_OFFSET) if torch.tending else Vector2.INF
+	return torch.stand.to_global(WICK_OFFSET) if torch.tending_patrol == patrol_number else Vector2.INF
 
 
 func _process(delta: float) -> void:

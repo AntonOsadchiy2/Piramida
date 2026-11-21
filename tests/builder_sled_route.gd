@@ -38,7 +38,8 @@ func _initialize() -> void:
 			wallpaper.world.render_frame(1.0, wallpaper.simulation.elapsed_seconds())
 			var view: Dictionary = wallpaper.world._views[builder.id]
 			assert(not view.tow_route.is_empty(), "Loaded builder must retain the slope route")
-			assert(view.sled.position.x <= -60.0, "Sled must trail the builder horizontally")
+			var facing := signf(view.tow_direction.x)
+			assert(view.sled.position.x * facing <= -60.0, "Sled must trail the builder horizontally")
 			var sled: Sprite2D = view.sled
 			var half_width := sled.texture.get_width() * sled.scale.x * 0.5
 			var bottom := (sled.texture.get_height() * 0.5 + sled.offset.y) * sled.scale.y
@@ -46,7 +47,7 @@ func _initialize() -> void:
 				var local := Vector2(lerpf(-half_width, half_width, float(index) / 16.0), bottom)
 				var edge := local.rotated(sled.rotation)
 				var x: float = view.root.position.x + sled.position.x + edge.x
-				var surface_y: float = wallpaper.world._tow_surface_y(view.tow_route, view.tow_segment, 1.0, x)
+				var surface_y: float = wallpaper.world._tow_surface_y(view.tow_route, view.tow_segment, facing, x)
 				assert(view.root.position.y + sled.position.y + edge.y <= surface_y + 0.01,
 					"Sled runner must stay above the ground and scaffold")
 			print("PASS: loaded builder sled follows the slope without entering the ground")

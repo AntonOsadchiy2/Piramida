@@ -41,6 +41,7 @@ func _ready() -> void:
 	var saw_raw_claim := false
 	var saw_workshop := false
 	var scaffold_captures := {}
+	var captured_quarry := false
 	for tick in range(100000):
 		var events: Array[Dictionary] = wallpaper.simulation.step_simulation()
 		wallpaper.world.capture_tick(wallpaper.simulation.state)
@@ -62,9 +63,25 @@ func _ready() -> void:
 		assert(workshop_count + state.incoming_count(Simulation.State.Owner.WORKSHOP_OUTPUT) <= 1)
 		assert(state.validate().is_empty())
 		await sled_checks.check_frame(wallpaper)
+		if not captured_quarry and "--quarry-capture" in OS.get_cmdline_user_args() \
+				and state.mined_count() >= 3 and state.stock_count(Simulation.State.Owner.FIRST_PORTER) > 0:
+			captured_quarry = true
+			var camera: Camera2D = wallpaper.world.get_node("Camera2D")
+			var normal_position := camera.position
+			var normal_zoom := camera.zoom
+			camera.position = wallpaper.world.screen_point(state.geometry.quarry_mouth()) + Vector2(0, -20)
+			camera.zoom = Vector2.ONE * 1.35
+			camera.force_update_scroll()
+			await RenderingServer.frame_post_draw
+			var path := OS.get_environment("TEMP").path_join("piramida-quarry-cuts.png")
+			assert(wallpaper.get_viewport().get_texture().get_image().save_png(path) == OK)
+			camera.position = normal_position
+			camera.zoom = normal_zoom
+			camera.force_update_scroll()
+			print("Captured ", path)
 		if "--scaffold-captures" in OS.get_cmdline_user_args():
 			var count: int = state.placed_count()
-			if count in [3, 4, 5] and not scaffold_captures.has(count) and not state.scaffold_sections.is_empty():
+			if count in [3, 4, 5] and not scaffold_captures.has(count) and not state.scaffold_paths.is_empty():
 				scaffold_captures[count] = true
 				var camera: Camera2D = wallpaper.world.get_node("Camera2D")
 				camera.position = wallpaper.world.screen_point(state.worker(state.active_builder_id).position)

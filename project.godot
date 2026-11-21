@@ -14,6 +14,10 @@ config/name="Пирамида"
 run/main_scene="res://scenes/wallpaper.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 
+[audio]
+
+driver/enable_input=true
+
 [display]
 
 window/size/viewport_width=1280

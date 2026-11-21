@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "blocks": [
+    {"x": 0, "y": 0, "type": "stone", "size": 4},
+    {"x": 4, "y": 0, "type": "stone", "size": 2},
+    {"x": 6, "y": 0, "type": "stone", "size": 1},
+    {"x": 6, "y": 1, "type": "stone", "size": 1},
+    {"x": 4, "y": 2, "type": "stone", "size": 2},
+    {"x": 0, "y": 4, "type": "stone", "size": 4}
+  ]
+}

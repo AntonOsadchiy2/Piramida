@@ -22,8 +22,8 @@ func _initialize() -> void:
 			break
 		simulation.step_simulation()
 	assert(seen.size() == 5)
-	_check_waiting(balance)
-	print("PASS: construction save resumes movement, work, row change and waiting")
+	_check_held_cargo(balance)
+	print("PASS: construction save resumes movement, work, row change and reserved cargo")
 	quit()
 
 func _check_round_trip(simulation: Simulation, saves: Saves, phase: String) -> void:
@@ -57,7 +57,7 @@ func _check_round_trip(simulation: Simulation, saves: Saves, phase: String) -> v
 		assert(recovered.state.worker(simulation.state.active_builder_id).position.is_equal_approx(
 			simulation.state.worker(simulation.state.active_builder_id).position))
 
-func _check_waiting(balance: Dictionary) -> void:
+func _check_held_cargo(balance: Dictionary) -> void:
 	var checked := Blueprint.validate({"version": 2, "blocks": [
 		{"x": 0, "y": 0, "size": 4, "type": "stone"},
 		{"x": 7, "y": 0, "size": 1, "type": "stone"},
@@ -72,12 +72,8 @@ func _check_waiting(balance: Dictionary) -> void:
 	state._move(0, State.Owner.UNMINED, State.Owner.PLACED)
 	state._move(1, State.Owner.UNMINED, State.Owner.FINISHED)
 	assert(simulation._construction._take_input(builder.id, State.Owner.FINISHED))
-	simulation._construction._refresh_routes()
-	simulation._construction._scaffolds.clear()
-	simulation._construction._queue_placement()
-	assert(builder.fsm_state == &"idle" and simulation._construction._waiting[builder.id] == &"walk_to_brick")
 	assert(state.validate().is_empty())
-	var saves := Saves.new(balance, "user://construction-save-test/waiting.json")
+	var saves := Saves.new(balance, "user://construction-save-test/cargo.json")
 	assert(saves.save_game(simulation) == OK)
 	for _repeat in range(2):
 		var result := saves.load_game()
@@ -87,7 +83,6 @@ func _check_waiting(balance: Dictionary) -> void:
 		assert(loaded.state.stock(builder.id) == [1])
 		assert(loaded.state.task_resource_ids(builder.id) == [1])
 		assert(loaded.state.validate().is_empty())
-		assert(loaded._construction._waiting[builder.id] == &"walk_to_brick")
 		assert(saves.save_game(loaded) == OK)
 	var legacy: Dictionary = simulation.to_dict()
 	legacy.erase("construction_waiting")
@@ -95,5 +90,7 @@ func _check_waiting(balance: Dictionary) -> void:
 		worker.erase("route_waiting")
 	var migrated: Simulation = Simulation.from_dict(balance, legacy)
 	assert(migrated != null)
-	assert(migrated._construction._waiting[builder.id] == &"walk_to_brick")
 	assert(migrated.state.stock(builder.id) == [1] and migrated.state.validate().is_empty())
+	migrated._construction.assign_tasks()
+	assert(migrated.state.worker(builder.id).fsm_state == &"walk_to_brick")
+	assert(migrated.state.worker(builder.id).movement_route()[-1] == migrated.state.scaffold_paths[0][-1])

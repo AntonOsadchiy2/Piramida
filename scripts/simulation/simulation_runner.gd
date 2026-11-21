@@ -60,10 +60,6 @@ func migrate_quarry_routes() -> bool:
 	return _production.migrate_saved_routes()
 
 
-func migrate_pyramid_routes() -> bool:
-	return _construction.migrate_pyramid_routes()
-
-
 func migrate_workshop_layout() -> void:
 	var geometry := state.geometry
 	var positions: Dictionary[Vector2, Vector2] = {
@@ -88,7 +84,7 @@ func stall_diagnostic(after_seconds: float) -> Dictionary:
 			"cargo": state.stock(worker_id),
 		}
 	var buffers := {}
-	for owner in [State.Owner.QUARRY, State.Owner.QUARRY_STOCK, State.Owner.RAW, State.Owner.WORKSHOP_OUTPUT,
+	for owner in [State.Owner.QUARRY, State.Owner.RAW, State.Owner.WORKSHOP_OUTPUT,
 			State.Owner.FINISHED, State.Owner.PLATFORM]:
 		buffers[owner] = {
 			"stock": state.stock_count(owner),
@@ -96,7 +92,7 @@ func stall_diagnostic(after_seconds: float) -> Dictionary:
 			"free": state.free_slots(owner),
 		}
 	return {"seconds_without_completion": quiet_seconds, "workers": workers,
-		"buffers": buffers, "construction_blocked": _construction.blocked_snapshot()}
+		"buffers": buffers}
 
 
 # Captures timing at a tick boundary for the save layer. Inventory is held by GameState.
@@ -117,7 +113,7 @@ func to_dict() -> Dictionary:
 	return {
 		"tick": _tick, "last_completion_tick": _last_completion_tick,
 		"step_seconds": Values.encode_real(_step_seconds), "workers": workers, "model": state.to_dict(),
-		"construction_waiting": _construction.waiting_snapshot() if _construction != null else {},
+		"construction_waiting": {},
 	}
 
 

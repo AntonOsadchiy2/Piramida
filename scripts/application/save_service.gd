@@ -5,6 +5,7 @@ const Values = preload("res://scripts/domain/snapshot_values.gd")
 const SCHEMA_VERSION := 8
 const WALLPAPER_SLOPES_SCHEMA_VERSION := 9
 const WALLPAPER_RAMP_SCHEMA_VERSION := 10
+const WALLPAPER_BLOCK_CUTS_SCHEMA_VERSION := 21
 
 enum Status { OK, MISSING, INVALID, UNSUPPORTED, IO_ERROR }
 
@@ -19,6 +20,8 @@ func _init(balance: Dictionary, path: String = "user://wallpaper/save.json") -> 
 	_schema_version = WALLPAPER_SLOPES_SCHEMA_VERSION if balance.world.get("quarrySlopesOnly", false) else SCHEMA_VERSION
 	if balance.world.get("pyramidRamp", false):
 		_schema_version = WALLPAPER_RAMP_SCHEMA_VERSION
+	if balance.world.get("quarryBlockCuts", false):
+		_schema_version = WALLPAPER_BLOCK_CUTS_SCHEMA_VERSION
 
 
 func load_game() -> Dictionary:
@@ -126,13 +129,11 @@ func _read(path: String) -> Dictionary:
 	if simulation == null:
 		return {"status": Status.INVALID}
 	var quarry_layout := 7 if _schema_version == SCHEMA_VERSION else WALLPAPER_SLOPES_SCHEMA_VERSION
-	if saved_layout < quarry_layout and not simulation.migrate_quarry_routes():
+	if (saved_layout < quarry_layout or (_schema_version == WALLPAPER_BLOCK_CUTS_SCHEMA_VERSION
+			and saved_layout < WALLPAPER_BLOCK_CUTS_SCHEMA_VERSION)) and not simulation.migrate_quarry_routes():
 		return {"status": Status.INVALID}
 	if saved_layout < 8:
 		simulation.migrate_workshop_layout()
-	if _schema_version == WALLPAPER_RAMP_SCHEMA_VERSION and saved_layout < _schema_version \
-			and not simulation.migrate_pyramid_routes():
-		return {"status": Status.INVALID}
 	var result := {"status": Status.OK, "simulation": simulation, "saved_at_utc": int(data.savedAtUtc),
 		"text": source, "lifecycle": lifecycle}
 	if data.get("wallpaperTransferFacing") is Dictionary:
@@ -149,7 +150,7 @@ func _migrate(version: int, data: Dictionary) -> bool:
 			data["savedAtUtc"] = data.snapshotUtc
 			data.erase("snapshotUtc")
 			return true
-		2, 8, 9:
+		2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20:
 			# Route migration needs the validated work queues and resource IDs.
 			return true
 		3, 4, 5, 6, 7:

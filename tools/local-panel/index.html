@@ -14,7 +14,8 @@
     main{max-width:1440px;margin:auto;padding:20px 24px}
     h2{margin:0 0 10px}
     p{line-height:1.45}
-    button,select{font:inherit;cursor:pointer;border:1px solid #a48b68;background:#fff9eb;border-radius:6px;padding:9px 14px;color:#35291d}
+    button,select,input[type="text"]{font:inherit;border:1px solid #a48b68;background:#fff9eb;border-radius:6px;padding:9px 14px;color:#35291d}
+    button,select{cursor:pointer}
     button.primary{background:#79502e;color:white;border-color:#79502e}
     button.danger{border-color:#a54832;color:#822d1e}
     button:disabled{cursor:wait;opacity:.6}
@@ -25,13 +26,18 @@
     .connection-error[hidden]{display:none}
     .panel[hidden]{display:none}
     .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-    .toolbar label{display:flex;align-items:center;gap:8px}
+    .toolbar label{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .blueprint-actions{margin:10px 0}
+    .block-form{margin-top:10px}
+    .block-form input[type="file"]{max-width:100%}
+    .block-form summary{cursor:pointer}
     .grid-wrap{overflow:auto;background:#dfd0b5;border:1px solid #ae9876;margin:14px 0;max-height:72vh}
-    .grid{display:grid;grid-template-columns:repeat(59,var(--cell-size));width:max-content;gap:1px;padding:8px}
+    .grid{display:grid;grid-template-columns:repeat(var(--grid-columns),var(--cell-size));width:max-content;gap:1px;padding:8px}
     .cell{padding:0;border:0;border-radius:0;background:#f7efdf;width:var(--cell-size);height:var(--cell-size)}
     .cell.on{background:#a8703f}
     .cell.large{background:#80522e}
     .cell[data-size="4"]{background:#5e3b23}
+    .cell[data-textured]{background-repeat:no-repeat}
     .cell:focus-visible{outline:2px solid #193e7b;outline-offset:-2px}
     .hint{color:#655642}
     .status{min-height:1.5em}
@@ -56,17 +62,36 @@
     <h2>Чертёж постройки</h2>
     <p>Нажимайте на клетки, чтобы поставить или убрать блок. Нижний ряд — земля. Блоки могут располагаться отдельно и не обязаны иметь опору снизу.</p>
     <div class="toolbar">
-      <label>Размер нового блока <select id="block-size"><option value="1">1 × 1</option><option value="2">2 × 2</option><option value="4">4 × 4</option></select></label>
-      <button type="button" id="save" class="primary">Сохранить чертёж</button>
-      <button type="button" id="clear">Очистить поле</button>
-      <button type="button" id="default">Вернуть пирамиду</button>
+      <label>Чертёж <select id="blueprint-choice" disabled></select></label>
+      <button type="button" id="save" class="primary" disabled>Сохранить</button>
+      <button type="button" id="clear" disabled>Очистить поле</button>
       <button type="button" id="reload-blueprint">Обновить данные</button>
       <button type="button" id="reset-progress" class="danger">Сбросить прогресс</button>
+      <span id="active-blueprint" role="status"></span>
+    </div>
+    <form id="save-copy" class="toolbar blueprint-actions">
+      <label>Название нового чертежа <input name="name" type="text" maxlength="60" required></label>
+      <button>Сохранить как новый</button>
+    </form>
+    <div class="toolbar">
+      <label>Блок для размещения <select id="block-choice"></select></label>
       <strong id="count"></strong>
     </div>
+    <details class="block-form">
+      <summary>Добавить блок с текстурами</summary>
+      <form id="block-preset" class="toolbar blueprint-actions">
+        <label>Название блока <input name="name" type="text" maxlength="60" required></label>
+        <label>Размер <select name="size"><option value="1">1 × 1</option><option value="2">2 × 2</option><option value="4">4 × 4</option></select></label>
+        <label>Сырой камень <input name="rawTexture" type="file" accept=".png,image/png"></label>
+        <label>Обработанный блок <input name="finishedTexture" type="file" accept=".png,image/png"></label>
+        <button>Добавить в список блоков</button>
+      </form>
+      <p class="hint">Загрузите хотя бы один PNG до 512 × 512 пикселей и 1 МБ. Для второй стадии можно оставить стандартную текстуру.</p>
+      <p id="block-status" class="status" role="status"></p>
+    </details>
     <p id="status" class="status" role="status"></p>
     <div class="grid-wrap"><div id="grid" class="grid" aria-label="Сетка чертежа"></div></div>
-    <p class="hint">Сетка 59 × 30, максимум 900 блоков. После сохранения выберите «Применить данные панели» в трее игры или запустите игру заново. Прогресс каждого чертежа хранится отдельно. Сброс начинает стройку заново по сохранённым чертежу и настройкам; несохранённые изменения поля не применяются.</p>
+    <p class="hint">Сетка <span id="grid-size"></span>, максимум 900 блоков. Чертёж можно переключить здесь или в подменю «Чертёж» в трее. Обои подхватывают выбор и сохраняют прогресс каждой стройки. Стандартную пирамиду можно использовать как основу для нового чертежа.</p>
   </section>
   <section id="settings-panel" class="panel" aria-labelledby="tab-settings" hidden>
     <h2>Настройки игры</h2>
@@ -132,30 +157,275 @@ document.querySelector('#reset-settings').onclick=async()=>{
   catch(e){settingsStatus.textContent=e.message;}
 };
 document.querySelector('#reload-settings').onclick=loadSettings;
-const blocks=new Map(),buttons=new Map();const key=(x,y)=>`${x},${y}`;
-function footprint(block){const cells=[];for(let dy=0;dy<block.size;dy++)for(let dx=0;dx<block.size;dx++)cells.push(key(block.x+dx,block.y+dy));return cells;}
-function blockAt(cell){for(const block of blocks.values())if(footprint(block).includes(cell))return block;return null;}
-function refresh(){count.textContent=`Блоков: ${blocks.size}`;for(const [k,b] of buttons){const piece=blockAt(k);b.classList.toggle('on',!!piece);b.classList.toggle('large',!!piece&&piece.size>1);b.dataset.size=piece?.size??'';b.title=piece?`${piece.x}, ${piece.y} · ${piece.size} × ${piece.size}`:k;b.setAttribute('aria-pressed',String(!!piece));}}
-for(let y=29;y>=0;y--)for(let x=0;x<59;x++){
-  const b=document.createElement('button'),k=key(x,y);b.type='button';b.className='cell';b.title=`${x}, ${y}`;b.setAttribute('aria-label',`Столбец ${x+1}, ряд ${y+1}`);
-  b.addEventListener('click',()=>{const old=blockAt(k);if(old)blocks.delete(key(old.x,old.y));else{const size=Number(document.querySelector('#block-size').value),piece={x,y,type:'stone',size};if(x+size>59||y+size>30||footprint(piece).some(cell=>blockAt(cell))){status.textContent='Блок не помещается или пересекается с другим.';return;}blocks.set(key(x,y),piece);}refresh();status.textContent='Чертёж изменён. Сохраните его, чтобы применить при запуске игры.';});
-  buttons.set(k,b);grid.append(b);
+const blueprintWidth = 177, blueprintHeight = 90;
+grid.style.setProperty('--grid-columns', blueprintWidth);
+document.querySelector('#grid-size').textContent = '177 × 90';
+const blocks = new Map(), buttons = new Map(), occupied = new Map();
+const key = (x, y) => [x, y].join(',');
+const blueprintChoice = document.querySelector('#blueprint-choice');
+const activeLabel = document.querySelector('#active-blueprint');
+const blockChoice = document.querySelector('#block-choice');
+const saveCopy = document.querySelector('#save-copy');
+const presetForm = document.querySelector('#block-preset');
+const presetStatus = document.querySelector('#block-status');
+const saveButton = document.querySelector('#save');
+const clearButton = document.querySelector('#clear');
+const reloadButton = document.querySelector('#reload-blueprint');
+const defaultBlocks = [1, 2, 4].map(size => ({id: String(size), name: 'Известняк', size}));
+const textureFields = ['rawTexture', 'finishedTexture'];
+let palette = new Map();
+let library = [];
+let loaded = '';
+let active = '';
+let dirty = false;
+let blueprintBusy = false;
+
+function replacePalette(presets) {
+  const selected = blockChoice.value;
+  const choices = [...defaultBlocks, ...presets];
+  palette = new Map(choices.map(block => [block.id, block]));
+  blockChoice.replaceChildren(...choices.map(block => new Option(
+    block.name + ' · ' + block.size + ' × ' + block.size, block.id)));
+  if (palette.has(selected)) blockChoice.value = selected;
 }
-async function loadBlueprint(){
-  try{const value=await getJson('/api/blueprint');blocks.clear();for(const b of value.blocks)blocks.set(key(b.x,b.y),{...b,size:b.size??1});refresh();status.textContent=value.warning||(value.isDefault?'Показана стандартная пирамида из игры.':'Загружен сохранённый чертёж.');}
-  catch(e){status.textContent=e.message;}
+
+function updateControls() {
+  const unavailable = blueprintBusy || !loaded;
+  blueprintChoice.disabled = unavailable;
+  if (blueprintChoice.value !== loaded && library.some(entry => entry.id === loaded)) {
+    blueprintChoice.value = loaded;
+  }
+  saveButton.disabled = unavailable || loaded === 'default' || !dirty;
+  clearButton.disabled = unavailable;
+  reloadButton.disabled = blueprintBusy;
+  grid.inert = unavailable;
+  saveCopy.querySelector('button').disabled = unavailable;
+  const current = library.find(entry => entry.id === active);
+  const text = current ? 'В обоях: ' + current.name : '';
+  if (activeLabel.textContent !== text) activeLabel.textContent = text;
 }
-document.querySelector('#save').onclick=async()=>{
-  const data={version:2,blocks:[...blocks.values()]};if(!data.blocks.length||data.blocks.length>900){status.textContent='Нужно от 1 до 900 блоков.';return;}
-  try{const r=await fetch('/api/blueprint',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await r.json();if(!r.ok)throw Error(result.error);blocks.clear();for(const b of result.blocks)blocks.set(key(b.x,b.y),b);refresh();status.textContent='Чертёж сохранён. Выберите «Применить данные панели» в трее игры.';}
-  catch(e){status.textContent=e.message;}
+
+async function writeJson(url, method, value) {
+  const response = await fetch(url, {
+    method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value)
+  });
+  const result = await response.json();
+  if (!response.ok) throw Error(result.error || 'Не удалось сохранить данные.');
+  return result;
+}
+
+function footprint(block) {
+  const cells = [];
+  for (let dy = 0; dy < block.size; dy++) {
+    for (let dx = 0; dx < block.size; dx++) cells.push(key(block.x + dx, block.y + dy));
+  }
+  return cells;
+}
+
+function paintTexture(button, piece) {
+  const hash = piece?.finishedTexture ?? piece?.rawTexture;
+  if (!hash) {
+    if (button.hasAttribute('data-textured')) {
+      button.removeAttribute('data-textured');
+      button.removeAttribute('style');
+    }
+    return;
+  }
+  const {x, y, size} = piece;
+  const portion = size === 1 ? 0 : 100 / (size - 1);
+  button.setAttribute('data-textured', '');
+  button.style.backgroundImage = 'url("/api/textures/' + hash + '")';
+  button.style.backgroundSize = [size * 100 + '%', size * 100 + '%'].join(' ');
+  button.style.backgroundPosition = [
+    (Number(button.dataset.x) - x) * portion + '%',
+    (y + size - 1 - Number(button.dataset.y)) * portion + '%'
+  ].join(' ');
+}
+
+function refresh() {
+  occupied.clear();
+  for (const block of blocks.values()) {
+    for (const cell of footprint(block)) occupied.set(cell, block);
+  }
+  count.textContent = 'Блоков: ' + blocks.size;
+  for (const [cell, button] of buttons) {
+    const piece = occupied.get(cell);
+    button.classList.toggle('on', !!piece);
+    button.classList.toggle('large', !!piece && piece.size > 1);
+    button.dataset.size = piece?.size ?? '';
+    button.title = piece ? [piece.x, piece.y].join(', ') + ' · ' + piece.size + ' × ' + piece.size : cell;
+    button.setAttribute('aria-pressed', String(!!piece));
+    paintTexture(button, piece);
+  }
+}
+
+function markDirty() {
+  dirty = true;
+  refresh();
+  updateControls();
+  status.textContent = loaded === 'default'
+    ? 'Введите название и нажмите «Сохранить как новый».'
+    : 'Есть несохранённые изменения.';
+}
+
+function toggleBlock(x, y, cell) {
+  const old = occupied.get(cell);
+  if (old) {
+    blocks.delete(key(old.x, old.y));
+  } else {
+    const {size, rawTexture, finishedTexture} = palette.get(blockChoice.value);
+    const piece = {x, y, size, type: 'stone', rawTexture, finishedTexture};
+    if (blocks.size >= 900) {
+      status.textContent = 'В чертеже может быть до 900 блоков.';
+      return;
+    }
+    if (x + size > blueprintWidth || y + size > blueprintHeight
+        || footprint(piece).some(part => occupied.has(part))) {
+      status.textContent = 'Блок не помещается или пересекается с другим.';
+      return;
+    }
+    blocks.set(cell, piece);
+  }
+  markDirty();
+}
+
+replacePalette([]);
+for (let y = blueprintHeight - 1; y >= 0; y--) {
+  for (let x = 0; x < blueprintWidth; x++) {
+    const button = document.createElement('button'), cell = key(x, y);
+    button.type = 'button';
+    button.className = 'cell';
+    button.dataset.x = x;
+    button.dataset.y = y;
+    button.title = cell;
+    button.setAttribute('aria-label', 'Столбец ' + (x + 1) + ', ряд ' + (y + 1));
+    button.addEventListener('click', () => toggleBlock(x, y, cell));
+    buttons.set(cell, button);
+    grid.append(button);
+  }
+}
+grid.parentElement.scrollTop = grid.scrollHeight;
+updateControls();
+
+function showBlueprint(value) {
+  blocks.clear();
+  for (const block of value.blocks) blocks.set(key(block.x, block.y), block);
+  loaded = value.selection;
+  dirty = false;
+  refresh();
+  status.textContent = value.warning || '';
+}
+
+async function syncBlueprints(force = false, background = false) {
+  const value = await getJson('/api/blueprints');
+  if (background && blueprintBusy) return;
+  if (JSON.stringify(library) !== JSON.stringify(value.entries)) {
+    library = value.entries;
+    blueprintChoice.replaceChildren(...library.map(({id, name}) => new Option(name, id)));
+  }
+  active = value.selection;
+  if (force || (!dirty && active !== loaded)) {
+    const blueprint = await getJson('/api/blueprint');
+    if (background && (blueprintBusy || dirty)) return;
+    showBlueprint(blueprint);
+  }
+}
+
+async function blueprintAction(action) {
+  if (blueprintBusy) return;
+  blueprintBusy = true;
+  updateControls();
+  try { await action(); }
+  catch (error) { status.textContent = error.message; }
+  finally {
+    blueprintBusy = false;
+    updateControls();
+  }
+}
+
+function draft() {
+  const pieces = [...blocks.values()];
+  if (!pieces.length) throw Error('Поставьте хотя бы один блок.');
+  return {version: pieces.some(block => block.rawTexture || block.finishedTexture) ? 3 : 2, blocks: pieces};
+}
+
+async function selectBlueprint(id) {
+  const result = await writeJson('/api/blueprint-selection', 'PUT', {id});
+  showBlueprint(result);
+  await syncBlueprints();
+}
+
+function discardDraft() {
+  return !dirty || confirm('Отменить несохранённые изменения чертежа?');
+}
+
+blueprintChoice.onchange = () => {
+  const id = blueprintChoice.value;
+  if (discardDraft()) blueprintAction(() => selectBlueprint(id));
+  else blueprintChoice.value = loaded;
 };
-document.querySelector('#clear').onclick=()=>{blocks.clear();refresh();status.textContent='Поле очищено. Сохранённый файл пока не изменён.';};
-document.querySelector('#default').onclick=async()=>{
-  try{const r=await fetch('/api/blueprint',{method:'DELETE'});if(!r.ok)throw Error('Не удалось включить пирамиду');await loadBlueprint();status.textContent='Стандартная пирамида сохранена. Выберите «Применить данные панели» в трее игры.';}
-  catch(e){status.textContent=e.message;}
+saveButton.onclick = () => blueprintAction(async () => {
+  const result = await writeJson('/api/blueprint', 'PUT', {...draft(), selection: loaded});
+  showBlueprint({...result, selection: loaded});
+  status.textContent = 'Чертёж сохранён.';
+});
+saveCopy.onsubmit = event => {
+  event.preventDefault();
+  blueprintAction(async () => {
+    const result = await writeJson('/api/blueprints', 'POST', {...draft(), name: saveCopy.elements.name.value});
+    saveCopy.reset();
+    try {
+      await selectBlueprint(result.id);
+      status.textContent = 'Новый чертёж сохранён и выбран.';
+    } catch (error) {
+      showBlueprint({...result, selection: result.id});
+      status.textContent = 'Новый чертёж сохранён. Не удалось обновить выбор: ' + error.message;
+    }
+  });
 };
-document.querySelector('#reload-blueprint').onclick=loadBlueprint;
+clearButton.onclick = () => {
+  blocks.clear();
+  markDirty();
+};
+reloadButton.onclick = () => {
+  if (discardDraft()) blueprintAction(() => syncBlueprints(true));
+};
+
+async function readTexture(file) {
+  if (file.size > 1024 * 1024) throw Error('Размер текстуры не должен превышать 1 МБ.');
+  let bitmap;
+  try { bitmap = await createImageBitmap(file); }
+  catch { throw Error('Выберите корректный файл PNG.'); }
+  const valid = bitmap.width <= 512 && bitmap.height <= 512;
+  bitmap.close();
+  if (!valid) throw Error('Ширина и высота текстуры не должны превышать 512 пикселей.');
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = () => reject(Error('Не удалось прочитать текстуру.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+presetForm.onsubmit = async event => {
+  event.preventDefault();
+  const button = presetForm.querySelector('button');
+  button.disabled = true;
+  try {
+    const data = {name: presetForm.elements.name.value, size: Number(presetForm.elements.size.value)};
+    for (const field of textureFields) {
+      const file = presetForm.elements[field].files[0];
+      if (file) data[field] = await readTexture(file);
+    }
+    const block = await writeJson('/api/block-presets', 'POST', data);
+    replacePalette([...palette.values()].filter(piece => !defaultBlocks.includes(piece)).concat(block));
+    blockChoice.value = block.id;
+    presetForm.reset();
+    presetStatus.textContent = 'Блок добавлен и выбран для размещения.';
+  } catch (error) { presetStatus.textContent = error.message; }
+  finally { button.disabled = false; }
+};
+
 document.querySelector('#reset-progress').onclick=async()=>{
   if(!confirm('Сбросить текущий прогресс стройки? Рабочие вернутся на стартовые позиции. Будут использованы сохранённые чертёж и настройки.'))return;
   const button=document.querySelector('#reset-progress');button.disabled=true;
@@ -174,7 +444,18 @@ if(location.protocol==='file:'){
   const message='Панель открыта как файл. Запустите tools/local-panel/start-panel.cmd и откройте адрес, который напечатает сервер.';
   const alert=document.querySelector('#connection-error');alert.textContent=message;alert.hidden=false;
   status.textContent=message;settingsStatus.textContent=message;
-}else{loadSettings();loadBlueprint();}
+} else {
+  loadSettings();
+  blueprintAction(() => syncBlueprints(true));
+  getJson('/api/block-presets').then(replacePalette).catch(error => { presetStatus.textContent = error.message; });
+  setInterval(() => {
+    if (!document.hidden && !blueprintBusy) {
+      syncBlueprints(false, true).then(() => {
+        if (!blueprintBusy) updateControls();
+      }).catch(error => { status.textContent = error.message; });
+    }
+  }, 2000);
+}
 </script>
 </body>
 </html>

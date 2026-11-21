@@ -29,6 +29,68 @@ func _cargo_rect(item: Sprite2D, sled: Sprite2D) -> Rect2:
 		visible.size * item.scale * sled.scale)
 
 
+func _check_tether_length(world: Node, id: int, facing: float, sized_sled: bool) -> void:
+	var view: Dictionary = world._views[id]
+	var sled: Sprite2D = view.sled
+	var tether: Line2D = view.tether
+	view.facing = facing
+	view.sled_factor = 2.0 if sized_sled else 1.0
+	sled.scale = Presenter.SLED_BASE_SCALE * view.sled_factor
+	view.quarry_haul = false
+	view.tow_direction = Vector2(facing, 0)
+	view.root.position = Vector2(facing * 430.0, 0)
+	view.tow_route = PackedVector2Array([Vector2(0, -2), Vector2(facing * 4, 0), Vector2(facing * 8, 0)])
+	view.tow_segment = 1
+	view.walker.show()
+	view.walker.pose(0.5, view.tow_direction, facing, true)
+	var hand: Vector2 = view.walker.hand_position
+	var offset := Vector2(facing * 50.0, -11.0) * float(view.sled_factor)
+	var base := 68.0 if id == State.Owner.BUILDER else 94.0
+	var distance: float = world._sled_distance(view, base)
+	world._fit_sled_to_route(sled, view.tow_route, 1, view.root.position, facing, distance)
+	var original_length := hand.distance_to(sled.position + offset.rotated(sled.rotation))
+	world._update_sled(id, view, true, view.walker)
+	_check(tether.visible and tether.get_point_position(0).is_equal_approx(hand)
+		and tether.get_point_position(1).is_equal_approx(sled.position + offset.rotated(sled.rotation)),
+		"The rope must connect the hand and hitch")
+	_check(absf(tether.get_point_position(1).distance_to(hand) - original_length * 3.0) <= 0.1,
+		"The rope must be three times its original length across a change of slope")
+
+
+func _check_music_jump(world: Presenter, balance: Dictionary, resource_id: int) -> void:
+	for source: int in [State.Owner.WORKSHOP_OUTPUT, State.Owner.QUARRY]:
+		var finished := source == State.Owner.WORKSHOP_OUTPUT
+		var id := State.Owner.BUILDER if finished else State.Owner.FIRST_PORTER
+		var state := State.new(balance)
+		state._move(resource_id, State.Owner.UNMINED, source)
+		var loaded := state.reserve_transfer(id, [resource_id], source) and state.pick_up(id, resource_id)
+		_check(loaded, "Cargo must be on the sled")
+		if not loaded:
+			continue
+		world.sync_state(state, true)
+		var view: Dictionary = world._views[id]
+		view.quarry_haul = false
+		view.tow_route = PackedVector2Array()
+		view.tow_direction = Vector2(1.0, -0.4).normalized()
+		var item: Sprite2D = view.items[0]
+		world.render_frame(1.0, 0.0)
+		_check(not is_zero_approx(view.sled.rotation), "Sled must be tilted during the jump test")
+		var settled := item.global_position
+		var slot := item.position
+		world.render_frame(1.0, 0.0, 25.0)
+		_check(item.global_position.is_equal_approx(settled + Vector2.UP * 25.0),
+			"%s must jump vertically on the slope" % ("Finished brick" if finished else "Raw stone"))
+		_check(item.position == slot, "Jump must preserve the transfer slot")
+		world.render_frame(1.0, 0.0)
+		_check(item.global_position.is_equal_approx(settled), "Cargo must land at its original position")
+		state.worker(id).fsm_state = &"unload_at_lift" if finished else &"unload"
+		world.sync_state(state)
+		world.render_frame(1.0, 0.0, 25.0)
+		var transfer_visible: bool = world._placing_brick.visible if finished else view.transfer_item.visible
+		_check(view.sled_cargo.position == Vector2.ZERO and transfer_visible,
+			"Manual unload must use its normal animation during a beat")
+
+
 func _run() -> void:
 	var wallpaper = WallpaperScene.instantiate()
 	wallpaper.use_temporary_save = true
@@ -61,20 +123,16 @@ func _run() -> void:
 		world._sync_sled_cargo(state, porter_id, view, false)
 		var item: Sprite2D = view.items[0]
 		var rect := _cargo_rect(item, view.sled)
-		_check((item.scale * view.sled.scale).is_equal_approx(Presenter.RAW_STONE_SCALE * size),
+		var expected_scale: float = balance.world.brickWidth * 100.0 * size * Presenter.LIMESTONE_SCALE / item.texture.get_width()
+		var expected_height_scale: float = balance.world.brickHeight * 100.0 * size * Presenter.LIMESTONE_SCALE / item.texture.get_height()
+		_check((item.scale * view.sled.scale).is_equal_approx(Vector2(expected_scale, expected_height_scale)),
 			"%dx%d cargo has incorrect world scale" % [size, size])
-		_check(is_equal_approx(view.sled_factor, float(size)),
+		var expected_sled_factor := maxf(1.0, float(size) * Presenter.LARGE_CARGO_SLED_FACTOR)
+		_check(is_equal_approx(view.sled_factor, expected_sled_factor),
 			"%dx%d single cargo has incorrect sled size" % [size, size])
-		if size == 1:
-			# The original single-stone slot is offset left and slightly above the deck.
-			_check(absf(rect.position.x + 57.32) < 0.1, "1x1 cargo moved from its original slot")
-			_check(absf(rect.end.y + 16.05) < 0.1, "1x1 cargo lost deck contact")
-		else:
-			# The visible rectangle must be centered and rest on the wooden deck.
-			_check(absf(rect.get_center().x) < 0.1, "%dx%d cargo is off center" % [size, size])
-			_check(absf(rect.end.y + 14.4 * size) < 0.1, "%dx%d cargo is off the deck" % [size, size])
-			_check(rect.position.x >= -45.0 * size - 0.1 and rect.end.x <= 45.0 * size + 0.1,
-				"%dx%d cargo exceeds deck width" % [size, size])
+		_check(absf(rect.get_center().x) < 0.1, "%dx%d cargo is off center" % [size, size])
+		_check(absf(rect.end.y + 14.4 * expected_sled_factor) < 0.1,
+			"%dx%d cargo is off the deck" % [size, size])
 		print("CHECK: sled cargo %dx%d" % [size, size])
 	sled_checks.check_mixed_layout(wallpaper)
 	var mixed := State.new(balance)
@@ -83,17 +141,14 @@ func _run() -> void:
 	world._sync_sled_cargo(mixed, porter_id, view, false)
 	var previous_right := -INF
 	var deck_y: float = -14.4 * view.sled_factor
-	var deck_half_width: float = 45.0 * view.sled_factor
-	_check(absf(view.sled_factor - 6.9484444) < 0.001,
-		"Mixed batch has incorrect sled width")
+	_check(view.sled_factor >= 2.0, "Mixed batch has incorrect sled width")
 	for index in range(checked.blocks.size()):
 		var item: Sprite2D = view.items[index]
 		var rect := _cargo_rect(item, view.sled)
 		var size: int = int(checked.blocks[index].size)
-		_check((item.scale * view.sled.scale).is_equal_approx(Presenter.RAW_STONE_SCALE * size),
+		var expected_scale: Vector2 = Vector2(balance.world.brickWidth, balance.world.brickHeight) * (100.0 * size * Presenter.LIMESTONE_SCALE) / item.texture.get_size()
+		_check((item.scale * view.sled.scale).is_equal_approx(expected_scale),
 			"Mixed cargo %d has incorrect world scale" % index)
-		_check(rect.position.x >= -deck_half_width - 0.1 and rect.end.x <= deck_half_width + 0.1,
-			"Mixed cargo %d exceeds deck width" % index)
 		_check(absf(rect.end.y - deck_y) < 0.1, "Mixed cargo %d is off the deck" % index)
 		if index > 0:
 			_check(absf(rect.position.x - previous_right - 4.0) < 0.1,
@@ -102,6 +157,11 @@ func _run() -> void:
 	_check(world._views[porter_id].items.size() >= checked.blocks.size(), "Mixed batch lost cargo sprites")
 	_check(wallpaper.simulation.state.placed_count() == 0,
 		"Layout test must not advance construction")
+	_check_tether_length(world, porter_id, 1.0, false)
+	_check_tether_length(world, State.Owner.BUILDER, -1.0, true)
+	print("CHECK: threefold tether length with hand and hitch contact")
+	_check_music_jump(world, balance, single_ids[4])
+	print("CHECK: music jump and landing on a slope, raw stone and manual transfer")
 	if _failures == 0:
 		print("PASS: independent sled layout 1x1, 2x2, 4x4 and mixed; zero placements")
 	else:

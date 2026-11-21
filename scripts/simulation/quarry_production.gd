@@ -24,7 +24,7 @@ func apply_completion(event: Dictionary) -> void:
 			var pending := _state.task_resource_ids(worker_id)
 			if not pending.is_empty() and _state.deliver(worker_id, pending[0]):
 				event["resource_id"] = pending[0]
-				if _state.geometry.quarry_slopes != null:
+				if _state.geometry.quarry_slopes != null and _state.geometry.quarry_excavation == null:
 					_follow_quarry_surface(worker_id)
 		&"unload":
 			var cargo := _state.stock(worker_id)
@@ -42,21 +42,37 @@ func _follow_quarry_surface(worker_id: int) -> void:
 	var miner := _state.worker(worker_id)
 	miner.position = _state.geometry.miner_work_position(mined - 1, mined)
 	var follow := func(start: Vector2, finish: Vector2) -> PackedVector2Array:
-		return slopes.route(slopes.project(start, mined), slopes.project(finish, mined), mined)
+		return _quarry_surface_route(start, finish, mined)
 	for id in _state.worker_ids():
 		var worker := _state.worker(id)
-		if worker.role == State.Worker.Role.PORTER and _state.transfer_source(id) == Owner.QUARRY:
+		if _state.transfer_source(id) == Owner.QUARRY or worker.fsm_state == &"return_to_quarry":
 			worker.follow_quarry_surface(follow, slopes.project(worker.position, mined))
 		elif worker.role == State.Worker.Role.MINER and id != worker_id and worker.fsm_state == &"idle":
 			worker.position = slopes.project(worker.position, mined)
 
 
+func _quarry_surface_route(start: Vector2, finish: Vector2, mined: int) -> PackedVector2Array:
+	var slopes := _state.geometry.quarry_slopes
+	var raw := _state.geometry.raw_storage()
+	if _state.geometry.quarry_excavation != null:
+		if start.y < raw.y and finish.y == raw.y and finish.x > raw.x:
+			return slopes.route(start, raw, mined) + PackedVector2Array([finish])
+		if finish.y < raw.y and start.y == raw.y and start.x > raw.x:
+			return PackedVector2Array([start]) + slopes.route(raw, finish, mined)
+		return slopes.route(start, finish, mined)
+	var leftward := start.x > finish.x
+	var left := slopes.project(finish if leftward else start, mined)
+	var right := slopes.project(start if leftward else finish, mined)
+	var route := slopes.route(left, raw if left.x < raw.x and right.x > raw.x else right, mined)
+	if route[-1] != right:
+		route.append(right)
+	if leftward:
+		route.reverse()
+	return route
+
+
 func assign_tasks() -> void:
-	var ids := _state.worker_ids()
-	ids.sort()
-	for worker_id in ids:
-		if _state.worker(worker_id).role == State.Worker.Role.PORTER:
-			_assign_porter(worker_id)
+	# Let a blocked miner claim a slot before the porter reserves the whole batch.
 	var miners := _state.worker_ids_for_role(State.Worker.Role.MINER)
 	for offset in range(miners.size()):
 		var index := (_state.mined_count() + offset) % miners.size()
@@ -64,6 +80,8 @@ func assign_tasks() -> void:
 		if miner.fsm_state == &"idle":
 			_assign_miner(miner.id)
 			break
+	for worker_id in _state.worker_ids_for_role(State.Worker.Role.PORTER):
+		_assign_porter(worker_id)
 
 
 func _assign_miner(worker_id: int) -> bool:
@@ -71,7 +89,7 @@ func _assign_miner(worker_id: int) -> bool:
 	if miner.fsm_state != &"idle":
 		return false
 	var resource_id := _state.mined_count()
-	if resource_id >= State.RESOURCE_COUNT:
+	if resource_id >= _state.target_count():
 		miner.fsm_state = &"exhausted"
 		return false
 	if not _state.reserve_transfer(worker_id, [resource_id]):
@@ -93,16 +111,17 @@ func _assign_miner(worker_id: int) -> bool:
 
 
 func _clear_quarry_slot(miner: State.Worker, previous_id: int) -> void:
-	if previous_id < 0 or _state.free_slots(Owner.QUARRY_STOCK) == 0:
+	if previous_id < 0 or _state.free_slots(Owner.RAW) == 0:
 		return
 	var geometry := _state.geometry
 	var target := -1
 	var best := INF
 	for id: int in _state.stock(Owner.QUARRY):
-		if _state.reserved_by(id) != -1:
+		if _state.reserved_by(id) != -1 or not _eligible_raw_resource(id):
 			continue
-		var length := geometry.route_length(geometry.miner_to_pickup(previous_id, id)) \
-			+ geometry.route_length(geometry.quarry_to_stock(id, previous_id + 1))
+		var length := float(id) if geometry.has_custom_blueprint() else (
+			geometry.route_length(geometry.miner_to_pickup(previous_id, id))
+			+ geometry.route_length(geometry.quarry_to_raw(id, previous_id + 1)))
 		if length < best:
 			best = length
 			target = id
@@ -119,9 +138,13 @@ func _clear_quarry_slot(miner: State.Worker, previous_id: int) -> void:
 		_state.cancel_transfer(miner.id)
 		return
 	miner.queue_work(&"load", float(_porter_config.loadSeconds), 1.0)
-	miner.queue_move(&"walk_to_storage", geometry.quarry_to_stock(target, previous_id + 1), speed)
+	var slot := _state.raw_place(target)
+	var approach := geometry.quarry_to_raw(target, previous_id + 1)
+	if approach[-1] != slot:
+		approach.append(slot)
+	miner.queue_move(&"walk_to_storage", approach, speed)
 	miner.queue_work(&"unload", float(_porter_config.unloadSeconds), 1.0)
-	miner.queue_move(&"return_to_quarry", geometry.quarry_stock_to_miner(previous_id), speed)
+	miner.queue_move(&"return_to_quarry", geometry.raw_to_miner(previous_id, slot), speed)
 
 
 func _assign_porter(worker_id: int) -> void:
@@ -142,24 +165,7 @@ func _assign_porter(worker_id: int) -> void:
 	if limit <= 0:
 		return
 
-	var staged := _available_batch(Owner.QUARRY_STOCK, Owner.RAW)
-	if geometry.has_custom_blueprint():
-		staged.sort()
-		var earliest_quarry := State.RESOURCE_COUNT
-		for resource_id: int in _state.stock(Owner.QUARRY):
-			if _state.reserved_by(resource_id) == -1 and _eligible_raw_resource(resource_id):
-				earliest_quarry = mini(earliest_quarry, resource_id)
-		var earlier_staged: Array[int] = []
-		for resource_id: int in staged:
-			if resource_id < earliest_quarry:
-				earlier_staged.append(resource_id)
-		staged = earlier_staged
-	staged = _reserve_raw_batch(worker_id, staged, Owner.QUARRY_STOCK)
-	if not staged.is_empty():
-		_queue_stock_haul(porter, staged, geometry.quarry_stock(), geometry.raw_storage(), true)
-		return
-
-	# Reserve the whole trip before the miner can claim any of its stones.
+	# Reserve all pickup targets and their unloading slots together.
 	var mined := _state.mined_count()
 	var distances: Dictionary[int, float] = {}
 	for resource_id: int in _state.stock(Owner.QUARRY):
@@ -185,6 +191,8 @@ func _assign_porter(worker_id: int) -> void:
 		return
 	var pickup_route := geometry.quarry_to_raw(batch[0], mined)
 	pickup_route.reverse()
+	if pickup_route[0] != porter.position:
+		pickup_route.insert(0, porter.position)
 	if not porter.queue_move(&"walk_to_pickup", pickup_route, empty_speed):
 		_state.cancel_transfer(worker_id)
 		return
@@ -193,53 +201,32 @@ func _assign_porter(worker_id: int) -> void:
 		var route := geometry.quarry_between_pickups(batch[index - 1], batch[index], mined)
 		porter.queue_move(&"walk_to_pickup", route, _loaded_speed(batch.slice(0, index)))
 		porter.queue_work(&"load", load_seconds, 1.0)
-	var approach := geometry.quarry_to_raw(batch[-1], mined)
-	approach.append(_state.raw_place(batch[0]))
-	porter.queue_move(&"walk_to_storage", approach, _loaded_speed(batch))
-	for index in range(batch.size()):
-		if index > 0:
-			porter.queue_move(&"walk_to_storage", [_state.raw_place(batch[index - 1]), _state.raw_place(batch[index])], _loaded_speed(batch.slice(index)))
-		porter.queue_work(&"unload", unload_seconds, 1.0)
-	porter.queue_move(&"return_to_raw_storage",
-		[_state.raw_place(batch[-1]), geometry.raw_storage()], empty_speed)
-
-
-func _available_batch(source: int, destination: int) -> Array[int]:
-	var limit := mini(_state.porter_capacity, _state.free_slots(destination))
-	var batch: Array[int] = []
-	for resource_id: int in _state.stock(source):
-		if batch.size() >= limit:
-			break
-		if _state.reserved_by(resource_id) == -1 and (destination != Owner.RAW or _eligible_raw_resource(resource_id)):
-			batch.append(resource_id)
-	return batch
+	_queue_raw_unload(porter, batch, geometry.quarry_to_raw(batch[-1], mined))
 
 
 func _eligible_raw_resource(resource_id: int) -> bool:
 	return not _state.geometry.has_custom_blueprint() or resource_id < _state.target_count()
 
 
-func _reserve_raw_batch(worker_id: int, candidates: Array[int], source: int = -1) -> Array[int]:
+func _reserve_raw_batch(worker_id: int, candidates: Array[int]) -> Array[int]:
 	for count in range(candidates.size(), 0, -1):
 		var batch := candidates.slice(0, count)
-		if _state.reserve_transfer(worker_id, batch, source):
+		if _state.reserve_transfer(worker_id, batch):
 			return batch
 	return []
 
 
-func _queue_stock_haul(porter: State.Worker, resources: Array[int], source: Vector2, destination: Vector2, raw_slots := false) -> void:
-	porter.queue_move(&"walk_to_pickup", [porter.position, source], float(_porter_config.emptySpeed))
-	for i in range(resources.size()):
-		porter.queue_work(&"load", float(_porter_config.loadSeconds), 1.0)
-	var first := _state.raw_place(resources[0]) if raw_slots else destination
-	porter.queue_move(&"walk_to_storage", [source, first], _loaded_speed(resources))
-	for i in range(resources.size()):
-		if raw_slots and i > 0:
-			porter.queue_move(&"walk_to_storage", [_state.raw_place(resources[i - 1]), _state.raw_place(resources[i])], _loaded_speed(resources.slice(i)))
+func _queue_raw_unload(porter: State.Worker, batch: Array[int], approach: PackedVector2Array) -> void:
+	# The top of the sled is always the block loaded last.
+	approach.append(_state.raw_place(batch[-1]))
+	porter.queue_move(&"walk_to_storage", approach, _loaded_speed(batch))
+	for index in range(batch.size() - 1, -1, -1):
+		if index < batch.size() - 1:
+			var route := PackedVector2Array([_state.raw_place(batch[index + 1]), _state.raw_place(batch[index])])
+			porter.queue_move(&"walk_to_storage", route, _loaded_speed(batch.slice(0, index + 1)))
 		porter.queue_work(&"unload", float(_porter_config.unloadSeconds), 1.0)
-	if raw_slots:
-		porter.queue_move(&"return_to_raw_storage",
-			[_state.raw_place(resources[-1]), _state.geometry.raw_storage()], float(_porter_config.emptySpeed))
+	porter.queue_move(&"return_to_raw_storage",
+		[_state.raw_place(batch[0]), _state.geometry.raw_storage()], float(_porter_config.emptySpeed))
 
 
 func _loaded_speed(resources: Array[int]) -> float:
@@ -251,6 +238,8 @@ func _loaded_speed(resources: Array[int]) -> float:
 
 
 func migrate_saved_routes() -> bool:
+	if _state.geometry.quarry_excavation != null:
+		return _migrate_block_cut_routes()
 	if not _migrate_miner():
 		return false
 	for worker_id in _state.worker_ids():
@@ -258,6 +247,83 @@ func migrate_saved_routes() -> bool:
 				and not _migrate_haul(worker_id):
 			return false
 	return true
+
+
+
+func _migrate_block_cut_routes() -> bool:
+	var geometry := _state.geometry
+	var mined := _state.mined_count()
+	var last_work := geometry.miner_work_position(mined - 1, mined) if mined > 0 else geometry.quarry_mouth()
+	for id in _state.worker_ids():
+		var worker := _state.worker(id)
+		if _state.transfer_source(id) == Owner.QUARRY or worker.fsm_state == &"return_to_quarry":
+			if not _migrate_block_cut_haul(worker, last_work, mined):
+				return false
+		elif worker.role == State.Worker.Role.MINER:
+			var routes: Array[PackedVector2Array] = []
+			var position := last_work
+			match worker.fsm_state:
+				&"move_to_cell":
+					routes.append(geometry.miner_to_next_cell(mined - 1))
+				&"mine":
+					position = geometry.miner_work_position(mined, mined)
+				&"walk_to_lift":
+					routes.append(geometry.miner_to_lift_operator(mined, last_work))
+				&"return_from_lift", &"operate_lift":
+					position = geometry.lift_operator_position()
+					var route := geometry.miner_to_lift_operator(mined, last_work)
+					route.reverse()
+					routes.append(route)
+				&"idle", &"exhausted":
+					if worker.position.is_equal_approx(geometry.lift_operator_position()):
+						position = worker.position
+			if not worker.move_to_new_layout(routes, position):
+				return false
+	return true
+
+
+func _migrate_block_cut_haul(worker: State.Worker, last_work: Vector2, mined: int) -> bool:
+	var geometry := _state.geometry
+	var pickups := _state.pickup_targets(worker.id)
+	var cargo := _state.stock(worker.id)
+	var position := worker.position
+	if worker.fsm_state == &"load" and not pickups.is_empty():
+		position = geometry.quarry_pickup(pickups.pop_front(), mined)
+	elif worker.fsm_state == &"unload" and not cargo.is_empty():
+		position = _state.raw_place(cargo[-1])
+
+	var routes: Array[PackedVector2Array] = []
+	var previous := position
+	var started := worker.fsm_state in [&"load", &"unload"]
+	for phase: Dictionary in worker.timing_snapshot().phases:
+		var old: Array = phase.route
+		if old.is_empty():
+			continue
+		var start := Vector2(old[0][0], old[0][1])
+		var finish := Vector2(old[-1][0], old[-1][1])
+		match StringName(phase.state):
+			&"walk_to_pickup":
+				if pickups.is_empty():
+					return false
+				if not started:
+					if not cargo.is_empty():
+						start = geometry.quarry_pickup(cargo[-1], mined)
+					elif worker.role == State.Worker.Role.MINER:
+						start = last_work
+					else:
+						start = geometry.quarry_excavation.project(start, mined)
+				finish = geometry.quarry_pickup(pickups.pop_front(), mined)
+			&"walk_to_storage":
+				if not started and not cargo.is_empty() and start.y < 0.0:
+					start = geometry.quarry_pickup(cargo[-1], mined)
+			&"return_to_quarry":
+				finish = last_work
+		if started:
+			start = previous
+		routes.append(_quarry_surface_route(start, finish, mined))
+		previous = finish
+		started = true
+	return worker.move_to_new_layout(routes, position)
 
 
 func _migrate_miner() -> bool:
@@ -275,17 +341,7 @@ func _migrate_miner() -> bool:
 		&"mine":
 			position = geometry.miner_work_position(mined, mined)
 		&"walk_to_pickup", &"load", &"walk_to_storage", &"unload", &"return_to_quarry":
-			if miner.fsm_state in [&"walk_to_pickup", &"load", &"walk_to_storage"]:
-				var pending := _state.task_resource_ids(Owner.MINER)
-				if pending.size() != 1 or mined == 0:
-					return false
-				if miner.fsm_state == &"walk_to_pickup":
-					routes.append(geometry.miner_to_pickup(mined - 1, pending[0]))
-				position = geometry.quarry_pickup(pending[0], mined)
-				routes.append(geometry.quarry_to_stock(pending[0], mined))
-			else:
-				position = geometry.quarry_stock()
-			routes.append(geometry.quarry_stock_to_miner(mined - 1))
+			return _migrate_haul(miner.id)
 		&"walk_to_lift":
 			routes.append(geometry.miner_to_lift_operator())
 		&"operate_lift", &"return_from_lift":
@@ -297,28 +353,12 @@ func _migrate_miner() -> bool:
 
 
 func _migrate_haul(worker_id: int) -> bool:
-	var geometry := _state.geometry
 	var mined := _state.mined_count()
 	var porter := _state.worker(worker_id)
-	var pending := _state.task_resource_ids(worker_id)
-	var targets := _state.pickup_targets(worker_id)
-	var routes: Array[PackedVector2Array] = []
-	var position := geometry.raw_storage()
-	var previous := pending.size() - targets.size() - 1
-	if porter.fsm_state == &"load":
-		if targets.is_empty():
-			return false
-		position = geometry.quarry_pickup(targets[0], mined)
-		previous += 1
-	if porter.fsm_state in [&"walk_to_pickup", &"load"]:
-		for index in range(previous + 1, pending.size()):
-			var route: PackedVector2Array
-			if index == 0:
-				route = geometry.quarry_to_raw(pending[0], mined)
-				route.reverse()
-			else:
-				route = geometry.quarry_between_pickups(pending[index - 1], pending[index], mined)
-			routes.append(route)
-	if porter.fsm_state != &"unload":
-		routes.append(geometry.quarry_to_raw(pending[-1], mined))
-	return porter.move_to_new_layout(routes, position)
+	var slopes := _state.geometry.quarry_slopes
+	if slopes == null:
+		return true
+	return porter.remap_saved_routes(
+		func(_phase: StringName, route: PackedVector2Array) -> PackedVector2Array:
+			return _quarry_surface_route(route[0], route[-1], mined),
+		slopes.project(porter.position, mined))

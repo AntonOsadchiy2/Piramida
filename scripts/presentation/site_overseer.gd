@@ -5,10 +5,9 @@ const CLOTHES := preload("res://scripts/presentation/overseer_clothes.gdshader")
 const PACE := 155.0
 const WATCH_SECONDS := 2.8
 const ORDER_SECONDS := 1.8
-const SCALE := 1.42
 const ORDERS := ["Берегите откос!", "Ровнее грани!", "Следите за рядом!"]
 
-# An optional presentation action can supply a global point to reach for at a stop.
+# An optional stop action supplies a global point to reach for, or Vector2.INF to stay idle.
 var stop_action: Callable
 var planted_stance := false
 
@@ -33,7 +32,7 @@ func setup(stops: PackedVector2Array, workers: Array[Node2D], show_orders: bool,
 	_walker = Walk.new()
 	_walker.planted_stance = planted_stance
 	_walker.cover_idle_shoulder = cover_idle_shoulder
-	_walker.scale = Vector2.ONE * SCALE
+	_walker.scale = Vector2.ONE * Walk.HUMAN_SCALE
 	var clothes := ShaderMaterial.new()
 	clothes.shader = CLOTHES
 	_walker.material = clothes
@@ -57,7 +56,8 @@ func setup(stops: PackedVector2Array, workers: Array[Node2D], show_orders: bool,
 
 
 func render(seconds: float, finished: bool) -> void:
-	var time := fposmod(seconds, _arrivals[-1])
+	var period := _arrivals[-1]
+	var time := fposmod(seconds, period)
 	var index := _stops.size() - 1
 	while time < _arrivals[index]:
 		index -= 1
@@ -68,18 +68,20 @@ func render(seconds: float, finished: bool) -> void:
 		_order.hide()
 	if local_time < wait:
 		position = start
-		var target := to_local(_workers[index].global_position) + Vector2(0, -90)
+		var shoulder_height := Vector2(0, -90) * Walk.HEIGHT_FACTOR
+		var target := to_local(_workers[index].global_position) + shoulder_height
 		var order_time := local_time - WATCH_SECONDS
+		var has_stop_action := stop_action.is_valid()
 		var reach := Vector2.INF
-		if stop_action.is_valid() and not finished:
-			reach = stop_action.call(index, order_time)
+		if has_stop_action and not finished:
+			reach = stop_action.call(index, order_time, floori(seconds / period))
 		var gesture := 0.0
-		if order_time >= 0.0 and not finished:
+		if order_time >= 0.0 and not finished and (not has_stop_action or reach.is_finite()):
 			gesture = smoothstep(0.0, 0.24, order_time) * (1.0 - smoothstep(1.35, ORDER_SECONDS, order_time))
 			if _order != null:
 				_show_order(index, gesture)
 		if reach.is_finite():
-			target = to_local(reach) - Vector2(0, -90)
+			target = to_local(reach) - shoulder_height
 		var facing := -1.0 if target.x < 0.0 else 1.0
 		var aim := clampf(Vector2(absf(target.x), target.y).angle(), -0.65, 0.45)
 		_walker.pose_idle(seconds, facing, gesture, aim)
@@ -92,7 +94,7 @@ func render(seconds: float, finished: bool) -> void:
 	if finished:
 		_walker.pose_idle(seconds, direction.x)
 	else:
-		var stride := Walk.STEP_LENGTH * SCALE
+		var stride := Walk.STEP_LENGTH * Walk.HUMAN_SCALE
 		var stride_weight := 1.0
 		if planted_stance:
 			var remaining := start.distance_to(next) - distance
@@ -104,6 +106,6 @@ func _show_order(index: int, opacity: float) -> void:
 	if _order.text != ORDERS[index]:
 		_order.text = ORDERS[index]
 		_order.reset_size()
-		_order.position = Vector2(-_order.size.x * 0.5, -145.0 - _order.size.y)
+		_order.position = Vector2(-_order.size.x * 0.5, -145.0 * Walk.HEIGHT_FACTOR - _order.size.y)
 	_order.modulate.a = opacity
 	_order.visible = opacity > 0.0

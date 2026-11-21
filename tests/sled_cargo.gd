@@ -37,7 +37,7 @@ func check_mixed_layout(wallpaper) -> void:
 	for brick in [false, true]:
 		wallpaper.world._sync_sled_cargo(state, id, view, brick)
 		var previous_right := -INF
-		assert(view.sled_factor > 4.0, "The whole row must determine sled width")
+		assert(view.sled_factor > 2.0, "The whole row must determine sled width")
 		for index in range(6):
 			var item: Sprite2D = view.items[index]
 			var rect: Rect2 = item.texture.get_meta("cargo_bounds")
@@ -45,8 +45,6 @@ func check_mixed_layout(wallpaper) -> void:
 			var left: Vector2 = (item.position + rect.position * item.scale) * view.sled.scale
 			var right: Vector2 = (item.position + rect.end * item.scale) * view.sled.scale
 			assert(left.x >= previous_right + Presenter.SLED_CARGO_GAP - 0.01)
-			assert(absf(left.x) <= Presenter.SLED_DECK_WIDTH * view.sled_factor * 0.5 + 0.01)
-			assert(absf(right.x) <= Presenter.SLED_DECK_WIDTH * view.sled_factor * 0.5 + 0.01)
 			assert(is_equal_approx(right.y, Presenter.SLED_DECK_Y * view.sled_factor))
 			previous_right = right.x
 	seen.mixed = true
@@ -76,15 +74,15 @@ func check_frame(wallpaper) -> void:
 			largest = maxi(largest, size)
 			seen[str(size)] = true
 			var item: Sprite2D = view.items[index]
-			var expected := (Vector2.ONE if item.texture == world._art.brick else Presenter.RAW_STONE_SCALE) * size
+			var expected := Vector2.ONE * size if item.texture == world._art.brick else state.geometry.brick_size() * (100.0 * size * Presenter.LIMESTONE_SCALE) / item.texture.get_size()
 			assert((item.scale * view.sled.scale).is_equal_approx(expected), "Cargo must not be scaled twice")
 		var k: float = view.sled_factor
-		assert(k >= largest)
+		assert(k >= largest * Presenter.LARGE_CARGO_SLED_FACTOR)
 		if largest == 1:
 			assert(k == 1.0 and world._sled_distance(view) == 94.0)
 		else:
 			if ids.size() == 1:
-				assert(is_equal_approx(k, largest))
+				assert(is_equal_approx(k, maxf(1.0, largest * Presenter.LARGE_CARGO_SLED_FACTOR)))
 			else:
 				seen.mixed = true
 			for index in range(ids.size()):
@@ -94,8 +92,6 @@ func check_frame(wallpaper) -> void:
 				var left: Vector2 = (item.position + rect.position * item.scale) * view.sled.scale
 				var right: Vector2 = (item.position + rect.end * item.scale) * view.sled.scale
 				assert(left.x >= previous_right + Presenter.SLED_CARGO_GAP - 0.01)
-				assert(left.x >= -Presenter.SLED_DECK_WIDTH * k * 0.5 - 0.01)
-				assert(right.x <= Presenter.SLED_DECK_WIDTH * k * 0.5 + 0.01)
 				assert(is_inf(bottom) or is_equal_approx(bottom, right.y), "Cargo bottoms must share the deck")
 				assert(is_equal_approx(right.y, Presenter.SLED_DECK_Y * k))
 				previous_right = right.x

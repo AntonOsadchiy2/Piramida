@@ -17,7 +17,7 @@ class TransferTask:
 
 
 var geometry: Geometry
-var scaffold_sections: Array = [] # Derived from placed masonry; rebuilt after load.
+var scaffold_paths: Array[PackedVector2Array] = [] # Derived from the blueprint and construction progress.
 var currency: int # Retained for compatibility with existing wallpaper snapshots.
 var upgrade_levels: Dictionary[String, int] = {}
 var porter_count: int = 0
@@ -40,6 +40,8 @@ var _capacities: Dictionary[int, int] = {}
 var _workers: Dictionary[int, Worker] = {}
 var _tasks: Dictionary[int, TransferTask] = {}
 var _raw_places: Dictionary[int, float] = {}
+var _restoring_legacy_raw := false
+var _legacy_quarry_capacity: int
 const RAW_GAP := 0.06
 
 
@@ -47,10 +49,11 @@ func _init(balance: Dictionary) -> void:
 	geometry = Geometry.new(balance)
 	porter_capacity = clampi(int(balance.workers.porter.get("capacity", 1)), 1, MAX_PORTER_CAPACITY)
 	var storages: Dictionary = balance.storages
+	_legacy_quarry_capacity = int(storages.quarryStockCapacity)
 	_capacities = {
 		Owner.UNMINED: RESOURCE_COUNT,
 		Owner.QUARRY: int(storages.quarryReadyCapacity),
-		Owner.QUARRY_STOCK: int(storages.quarryStockCapacity),
+		Owner.QUARRY_STOCK: 0,
 		Owner.RAW: int(storages.raw),
 		Owner.WORKSHOP_OUTPUT: int(storages.workshopOutput),
 		Owner.FINISHED: int(storages.finished),
@@ -198,23 +201,11 @@ func target_count() -> int:
 
 
 func platform_position() -> Vector2:
-	var builder := worker(active_builder_id)
-	if geometry.has_custom_blueprint():
-		if current_row == 0:
-			return geometry.platform(0)
-		return delivery_point if delivery_point.is_finite() else builder.position
-	if builder.fsm_state != &"rebuild_platform":
-		return geometry.platform(current_row)
-
-	var route := geometry.platform_to_next_row(current_row)
-	var fraction := 1.0 - builder.remaining_work / geometry.rebuild_seconds()
-	if geometry.has_pyramid_ramp():
-		return route[0].lerp(route[-1], fraction)
-	var distance := geometry.route_length(route) * fraction
-	var vertical := route[0].distance_to(route[1])
-	if distance < vertical:
-		return route[0].move_toward(route[1], distance)
-	return route[1].move_toward(route[2], distance - vertical)
+	if delivery_point.is_finite():
+		return delivery_point
+	if not scaffold_paths.is_empty():
+		return scaffold_paths[-1][-1]
+	return geometry.platform(current_row)
 
 
 func resource_record(resource_id: int) -> Dictionary:
@@ -299,7 +290,9 @@ func reserve_transfer(worker_id: int, resource_ids: Array[int], source_owner: in
 
 	var places := _raw_places.duplicate()
 	if destination == Owner.RAW:
-		for resource_id in resource_ids:
+		var unload_order := resource_ids.duplicate()
+		unload_order.reverse()
+		for resource_id in unload_order:
 			var center := _find_raw_place(resource_id, places)
 			if not is_finite(center):
 				return false
@@ -358,6 +351,9 @@ func validate() -> PackedStringArray:
 	var seen := {}
 	for owner in _stocks:
 		var capacity: int = _capacities.get(owner, porter_capacity)
+		if owner == Owner.RAW and not _restoring_legacy_raw:
+			# Old saves can bring over more stones than the shared strip can fit.
+			capacity += mini(_legacy_quarry_capacity, stock_count(owner) + incoming_count(owner) - _raw_places.size())
 		if stock_count(owner) + incoming_count(owner) > capacity:
 			errors.append("Capacity exceeded for owner %d." % owner)
 		for resource_id in _stocks[owner]:
@@ -434,10 +430,12 @@ func _route(worker_id: int, source: int = -1, destination: int = -1) -> Vector2i
 	var route: Vector2i
 	match _workers[worker_id].role:
 		Worker.Role.MINER:
-			route = Vector2i(Owner.QUARRY, Owner.QUARRY_STOCK) if source == Owner.QUARRY \
+			var raw_destination := Owner.QUARRY_STOCK if _restoring_legacy_raw else Owner.RAW
+			route = Vector2i(Owner.QUARRY, raw_destination) if source == Owner.QUARRY \
 				else Vector2i(Owner.UNMINED, Owner.QUARRY)
 		Worker.Role.DRESSER:
-			route = Vector2i(Owner.QUARRY_STOCK if source == Owner.QUARRY_STOCK else Owner.RAW,
+			var old_source := _restoring_legacy_raw and source == Owner.QUARRY_STOCK
+			route = Vector2i(Owner.QUARRY_STOCK if old_source else Owner.RAW,
 				Owner.FINISHED if destination == Owner.FINISHED else Owner.WORKSHOP_OUTPUT)
 		Worker.Role.LIFT:
 			route = Vector2i(Owner.FINISHED, Owner.PLATFORM)
@@ -448,7 +446,7 @@ func _route(worker_id: int, source: int = -1, destination: int = -1) -> Vector2i
 				route = Vector2i(Owner.FINISHED if source == Owner.FINISHED and current_row == 0 else Owner.PLATFORM, Owner.PLACED)
 		_:
 			route = Vector2i(Owner.QUARRY, Owner.RAW)
-			if source == Owner.QUARRY_STOCK:
+			if _restoring_legacy_raw and source == Owner.QUARRY_STOCK:
 				route = Vector2i(Owner.QUARRY_STOCK, Owner.RAW)
 	if (source >= 0 and route.x != source) or (destination >= 0 and route.y != destination):
 		return Vector2i(-1, -1)
@@ -477,6 +475,7 @@ func to_dict() -> Dictionary:
 		raw_places[str(resource_id)] = _raw_places[resource_id]
 	return {
 		"raw_places": raw_places,
+		"raw_layout": 1,
 		"currency": currency, "upgrade_levels": upgrade_levels.duplicate(),
 		"resource_sizes": geometry.resource_sizes(),
 		"porter_count": porter_count, "porter_capacity": porter_capacity,
@@ -541,6 +540,12 @@ func restore_snapshot(data: Dictionary, timings: Array, balance: Dictionary) -> 
 		delivery_point = Vector2(saved_delivery[0], saved_delivery[1])
 		if not delivery_point.is_finite():
 			return false
+	var raw_layout: Variant = data.get("raw_layout", 0)
+	if not Values.integer(raw_layout, 1):
+		return false
+	_restoring_legacy_raw = raw_layout == 0
+	if _restoring_legacy_raw:
+		_capacities[Owner.QUARRY_STOCK] = _legacy_quarry_capacity
 	var routes: Variant = data.get("transfer_routes", {})
 	if not routes is Dictionary or not _restore_stocks(data.stocks) \
 			or not _restore_tasks(data.tasks, routes) or not _restore_raw_places(data.get("raw_places", {})) \
@@ -561,8 +566,12 @@ func restore_snapshot(data: Dictionary, timings: Array, balance: Dictionary) -> 
 	for id in range(RESOURCE_COUNT):
 		if (_owners[id] == Owner.UNMINED) != (id >= mined_count()):
 			return false
-	var workers_restored := _restore_workers(timings, balance)
-	return workers_restored
+	if not _restore_workers(timings, balance):
+		return false
+	if _restoring_legacy_raw:
+		_merge_legacy_raw_stock(float(balance.world.rawStorageX))
+		return validate().is_empty()
+	return true
 
 
 func _restore_stocks(stocks: Dictionary) -> bool:
@@ -598,7 +607,7 @@ func _restore_raw_places(saved: Variant) -> bool:
 			var id := int(key)
 			if not _valid_id(id) or not is_finite(saved[key]):
 				return false
-			_raw_places[id] = float(saved[key])
+			_raw_places[id] = float(saved[key]) + (Geometry.RAW_STORAGE_SHIFT_X if _restoring_legacy_raw else 0.0)
 		return true
 	# Earlier snapshots only had count-based storage; assign stable first-fit positions.
 	var pending: Array[int] = []
@@ -613,6 +622,57 @@ func _restore_raw_places(saved: Variant) -> bool:
 			continue
 		_raw_places[id] = center
 	return true
+
+
+func _merge_legacy_raw_stock(old_junction_x: float) -> void:
+	var old_stock := geometry.legacy_quarry_stock()
+	var old_bounds := geometry.raw_storage_bounds() - Vector2.ONE * Geometry.RAW_STORAGE_SHIFT_X
+	var moved: Array[int] = []
+	for resource_id: int in stock(Owner.QUARRY_STOCK):
+		_move(resource_id, Owner.QUARRY_STOCK, Owner.RAW)
+		moved.append(resource_id)
+	var depot_stops: Dictionary[int, int] = {}
+	for id in _tasks.keys():
+		var task := _tasks[id]
+		if task.destination == Owner.QUARRY_STOCK:
+			task.destination = Owner.RAW
+			depot_stops[id] = task.pending[0]
+			moved.append(task.pending[0])
+		elif task.source == Owner.QUARRY_STOCK:
+			if _workers[id].role == Worker.Role.DRESSER:
+				task.source = Owner.RAW
+				depot_stops[id] = task.pending[0]
+			else:
+				# A shuttle between the two former depots has already reached the merged stock.
+				for resource_id: int in stock(id):
+					_move(resource_id, id, Owner.RAW)
+					moved.append(resource_id)
+				cancel_transfer(id)
+				_workers[id].finish_trip_at(geometry.raw_storage())
+	moved.sort()
+	for resource_id in moved:
+		var center := _find_raw_place(resource_id, _raw_places)
+		if is_finite(center):
+			_raw_places[resource_id] = center
+	for id in _workers:
+		var agent := _workers[id]
+		var depot := raw_place(depot_stops[id]) if depot_stops.has(id) else geometry.raw_storage()
+		agent.transform_waypoints(func(point: Vector2) -> Vector2:
+			if point.is_equal_approx(old_stock):
+				return depot
+			if point.y == 0.0:
+				if is_equal_approx(point.x, old_junction_x):
+					return geometry.raw_storage()
+				if agent.role in [Worker.Role.PORTER, Worker.Role.MINER] \
+						and agent.fsm_state in [&"walk_to_pickup", &"load", &"walk_to_storage", &"unload",
+							&"return_to_quarry", &"return_to_raw_storage"] \
+						and point.x >= old_bounds.x and point.x <= old_bounds.y:
+					return point + Vector2(Geometry.RAW_STORAGE_SHIFT_X, 0)
+			elif agent.role in [Worker.Role.MINER, Worker.Role.PORTER] and point.y < 0.0:
+				return point + Vector2(Geometry.QUARRY_SHIFT_X, 0)
+			return point)
+	_restoring_legacy_raw = false
+	_capacities[Owner.QUARRY_STOCK] = 0
 
 
 func _restore_tasks(tasks: Dictionary, routes: Dictionary) -> bool:
@@ -646,7 +706,7 @@ func _restore_tasks(tasks: Dictionary, routes: Dictionary) -> bool:
 func _restore_workers(timings: Array, balance: Dictionary) -> bool:
 	var states := [
 		["move_to_cell", "mine", "walk_to_pickup", "load", "walk_to_storage", "unload",
-			"return_to_quarry"], ["process_brick"], ["lift_brick"],
+			"return_to_quarry"], ["process_brick", "walk_to_quarry_stock", "return_to_workshop"], ["lift_brick"],
 		["walk_to_brick", "place_brick", "return_to_platform", "rebuild_platform", "climb_to_platform", "join_platform",
 			"walk_to_workshop", "walk_to_lift_base", "unload_at_lift", "walk_to_lift", "operate_lift", "return_from_lift"],
 		["walk_to_pickup", "load", "walk_to_storage", "unload", "return_to_raw_storage"],
@@ -671,13 +731,14 @@ func _restore_workers(timings: Array, balance: Dictionary) -> bool:
 			return false
 		var requires_task := agent.fsm_state in [&"move_to_cell", &"mine", &"process_brick", &"lift_brick",
 			&"walk_to_brick", &"place_brick", &"walk_to_pickup", &"load", &"walk_to_storage", &"unload",
-			&"walk_to_workshop", &"walk_to_lift_base", &"unload_at_lift"]
+			&"walk_to_workshop", &"walk_to_lift_base", &"unload_at_lift",
+			&"walk_to_quarry_stock", &"return_to_workshop"]
 		var idle_builder_wait := agent.role == Worker.Role.BUILDER and agent.fsm_state == &"idle" \
 			and _tasks.has(id)
 		if requires_task != _tasks.has(id) and not idle_builder_wait:
 			return false
 		if (requires_task or idle_builder_wait) and agent.role in [Worker.Role.DRESSER, Worker.Role.LIFT, Worker.Role.BUILDER]:
-			var expected_cargo := 0 if agent.fsm_state == &"walk_to_workshop" else 1
+			var expected_cargo := 0 if agent.fsm_state in [&"walk_to_workshop", &"walk_to_quarry_stock"] else 1
 			if idle_builder_wait:
 				if stock_count(id) > 1 or (stock_count(id) == 0 and _tasks[id].source != Owner.WORKSHOP_OUTPUT):
 					return false
@@ -686,6 +747,9 @@ func _restore_workers(timings: Array, balance: Dictionary) -> bool:
 				return false
 			if agent.fsm_state in [&"walk_to_workshop", &"walk_to_lift_base", &"unload_at_lift"] \
 					and transfer_source(id) != Owner.WORKSHOP_OUTPUT:
+				return false
+			if agent.fsm_state in [&"walk_to_quarry_stock", &"return_to_workshop"] \
+					and transfer_source(id) not in [Owner.QUARRY_STOCK, Owner.RAW]:
 				return false
 		if requires_task and (agent.role == Worker.Role.PORTER or (agent.role == Worker.Role.MINER and transfer_source(id) == Owner.QUARRY)):
 			var loads := 0
@@ -697,10 +761,10 @@ func _restore_workers(timings: Array, balance: Dictionary) -> bool:
 				return false
 		if agent.fsm_state == &"rebuild_platform" and (current_row + 1 != completed_rows or finished):
 			return false
-		if agent.fsm_state == &"exhausted" and mined_count() != RESOURCE_COUNT:
+		if agent.fsm_state == &"exhausted" and mined_count() < target_count():
 			return false
 		if id == Owner.MINER and agent.fsm_state in [&"walk_to_lift", &"operate_lift", &"return_from_lift"] \
-				and mined_count() != RESOURCE_COUNT:
+				and mined_count() < target_count():
 			return false
 		if agent.fsm_state in [&"walk_to_lift", &"operate_lift"]:
 			if lift_operator != -1:

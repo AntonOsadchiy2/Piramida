@@ -3,6 +3,7 @@ extends Node2D
 const Simulation = preload("res://scripts/simulation/simulation_runner.gd")
 const SaveService = preload("res://scripts/application/save_service.gd")
 const WorldPresenter = preload("res://scripts/presentation/world_presenter.gd")
+const SledMusic = preload("res://scripts/presentation/sled_music.gd")
 const WallpaperSky = preload("res://scripts/presentation/wallpaper_sky.gd")
 const WallpaperWeather = preload("res://scripts/application/wallpaper_weather.gd")
 const Blueprint = preload("res://scripts/domain/blueprint.gd")
@@ -13,12 +14,16 @@ const WORLD_SCENE := preload("res://scenes/wallpaper_world.tscn")
 const COMPLETED_DISPLAY_MSEC := 5000
 const MIN_AUTOSAVE_REAL_MSEC := 5000
 const SAVE_PATH := "user://wallpaper/save.json"
+const LEGACY_BLUEPRINT := "user://wallpaper/blueprint.json"
+const BLUEPRINT_SELECTION := "user://wallpaper/blueprint-selection.txt"
+const BLUEPRINT_DIRECTORY := "user://wallpaper/blueprints/"
 const TIME_SCALE_PATH := "user://wallpaper/time-scale.txt"
 const TIME_SCALES := [1, 4, 8, 16, 32]
 const TRAY_RELOAD_REQUEST := "user://wallpaper/reload.request"
 const PANEL_RESET_REQUEST := "user://wallpaper/reset.request"
 const TRAY_OPEN_PANEL_REQUEST := "user://wallpaper/open-panel.request"
 const PANEL_URL_FILE := "user://wallpaper/panel-url.txt"
+const VERIFY_BLUEPRINT_ARG := "--verify-blueprint"
 const PANEL_FILES := [
 	"tools/local-panel/server.cjs",
 	"tools/local-panel/index.html",
@@ -36,8 +41,10 @@ var _light: CanvasModulate
 var _torches: SiteTorches
 var _sky := WallpaperSky.new()
 var _acceptance := false
+var _acceptance_blueprint: Array = []
 var _completed_cycles := 0
 var _weather := WallpaperWeather.new()
+var _sled_music: SledMusic
 var _save_service: SaveService
 var _temporary_save_dir: DirAccess
 var _next_save_at := INF
@@ -45,6 +52,7 @@ var _next_timed_save_at_msec := 0
 var _last_saved_rows := 0
 var _time_scale := 1.0
 var _profile_key := ""
+var _blueprint_selection := ""
 var _panel_pid := -1
 var _tray_poll_elapsed := 0.0
 var _handled_reset_request := ""
@@ -58,7 +66,11 @@ static func wallpaper_balance(base: Dictionary) -> Dictionary:
 	var world_config: Dictionary = effective.world
 	world_config.quarryCenterX = -5.85
 	world_config.quarryStepX = 0.19
+	world_config.quarryExtraBays = 1
+	world_config.quarryUndergroundBays = 8
+	world_config.terraceDrop = float(world_config.terraceDrop) * 1.35 * 1.5
 	world_config.quarrySlopesOnly = true
+	world_config.quarryBlockCuts = true
 	world_config.pyramidRamp = true
 	world_config.liftCableClearance = 1.65
 	world_config.liftSuspension = 0.50
@@ -66,12 +78,28 @@ static func wallpaper_balance(base: Dictionary) -> Dictionary:
 
 
 func _ready() -> void:
-	_acceptance = OS.get_cmdline_user_args().has("--verify-wallpaper-cycles")
-	if OS.get_cmdline_user_args().has("--verify-panel-resources"):
+	var args := OS.get_cmdline_user_args()
+	_acceptance = args.has("--verify-wallpaper-cycles")
+	if args.has("--verify-panel-resources"):
 		var panel_server := _extract_panel_files()
 		print("PASS: panel resources in export" if not panel_server.is_empty() else "FAIL: panel resources missing")
 		get_tree().quit(0 if not panel_server.is_empty() else 1)
 		return
+	var blueprint_arg := args.find(VERIFY_BLUEPRINT_ARG)
+	if _acceptance and blueprint_arg >= 0:
+		var path := args[blueprint_arg + 1] if blueprint_arg + 1 < args.size() else ""
+		if path.is_empty() or not FileAccess.file_exists(path):
+			set_process(false)
+			push_error("--verify-blueprint requires a readable blueprint JSON file.")
+			get_tree().quit(1)
+			return
+		var checked := Blueprint.validate(JSON.parse_string(FileAccess.get_file_as_string(path)))
+		if checked.has("error"):
+			set_process(false)
+			push_error("Invalid verification blueprint: " + checked.error)
+			get_tree().quit(1)
+			return
+		_acceptance_blueprint = checked.blocks
 	if OS.has_feature("single_process_wallpaper") and not _acceptance and not use_temporary_save:
 		_clear_tray_requests()
 	if OS.has_feature("single_process_wallpaper") and DisplayServer.get_name() != "headless":
@@ -97,9 +125,14 @@ func _ready() -> void:
 	_torches.name = "SiteTorches"
 	add_child(_torches)
 	if _temporary_save_dir != null:
-		_start_cycle()
+		if not _start_cycle() and _acceptance:
+			set_process(false)
+			get_tree().quit(1)
 	elif not _handle_reset_request():
 		_resume_cycle()
+	if not _acceptance and not use_temporary_save and DisplayServer.get_name() != "headless":
+		_sled_music = SledMusic.new()
+		add_child(_sled_music)
 
 
 func _panel_config() -> Dictionary:
@@ -107,28 +140,35 @@ func _panel_config() -> Dictionary:
 	var balance := wallpaper_balance(base)
 	var save_path := SAVE_PATH
 	var profile_key := ""
-	var custom: Array = []
+	var custom := _acceptance_blueprint
+	var selection := ""
 	var settings: Dictionary = {}
 	if not _acceptance and not use_temporary_save:
-		custom = _load_blueprint()
+		selection = _read_blueprint_selection()
+		custom = _load_blueprint(selection)
 		settings = _load_settings()
-		if not custom.is_empty():
-			balance.world["blueprintBlocks"] = custom
-			var levels := {}
-			for block in custom:
-				levels[int(block.y)] = true
-			balance.world.pyramidRows = levels.size()
 		if not settings.is_empty():
 			PanelSettings.apply(balance, settings)
 		if not custom.is_empty() or not settings.is_empty():
-			profile_key = JSON.stringify({"blueprint": custom, "settings": settings}, "", true).sha256_text()
+			var profile := {"blueprint": custom, "settings": settings}
+			if not custom.is_empty() and selection.begins_with("b-"):
+				profile["selection"] = selection
+			profile_key = JSON.stringify(profile, "", true).sha256_text()
 			save_path = "user://wallpaper/profiles/" + profile_key + "/save.json"
-	return {"balance": balance, "settings": settings, "save_path": save_path, "key": profile_key}
+	if not custom.is_empty():
+		balance.world["blueprintBlocks"] = custom
+		var levels := {}
+		for block in custom:
+			levels[int(block.y)] = true
+		balance.world.pyramidRows = levels.size()
+	return {"balance": balance, "settings": settings, "save_path": save_path,
+		"key": profile_key, "selection": selection}
 
 
 func _apply_panel_config(config: Dictionary) -> void:
 	_balance = config.balance
 	_profile_key = config.key
+	_blueprint_selection = config.get("selection", "")
 	_weather = WallpaperWeather.new()
 	if not config.settings.is_empty():
 		_weather.configure(config.settings)
@@ -141,6 +181,7 @@ func _reload_panel_data() -> void:
 		return
 	var config := _panel_config()
 	if config.key == _profile_key:
+		_blueprint_selection = config.selection
 		return
 	if not _save_progress():
 		push_warning("Panel reload cancelled because progress could not be saved.")
@@ -159,11 +200,25 @@ func _load_settings() -> Dictionary:
 	return result
 
 
-func _load_blueprint() -> Array:
-	const PATH := "user://wallpaper/blueprint.json"
-	if not FileAccess.file_exists(PATH):
+func _read_blueprint_selection() -> String:
+	if not FileAccess.file_exists(BLUEPRINT_SELECTION):
+		return "legacy" if FileAccess.file_exists(LEGACY_BLUEPRINT) else "default"
+	var selection := FileAccess.get_file_as_string(BLUEPRINT_SELECTION)
+	if selection in ["default", "legacy"]:
+		return selection
+	if selection.begins_with("b-") and selection.length() > 2 and selection.length() <= 62 \
+			and selection == selection.validate_filename():
+		return selection
+	return "default"
+
+
+func _load_blueprint(selection: String) -> Array:
+	if selection == "default":
 		return []
-	var checked := Blueprint.validate(JSON.parse_string(FileAccess.get_file_as_string(PATH)))
+	var path := LEGACY_BLUEPRINT if selection == "legacy" else BLUEPRINT_DIRECTORY + selection + ".json"
+	if not FileAccess.file_exists(path):
+		return []
+	var checked := Blueprint.validate(JSON.parse_string(FileAccess.get_file_as_string(path)))
 	if checked.has("error"):
 		push_warning("Ignoring invalid blueprint: " + checked.error)
 		return []
@@ -296,11 +351,12 @@ func _clear_tray_requests() -> void:
 
 func _poll_tray_requests() -> void:
 	_time_scale = _load_time_scale()
-	if FileAccess.file_exists(PANEL_RESET_REQUEST):
-		if _handle_reset_request() and FileAccess.file_exists(TRAY_RELOAD_REQUEST):
+	if _handle_reset_request():
+		if FileAccess.file_exists(TRAY_RELOAD_REQUEST):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(TRAY_RELOAD_REQUEST))
-	elif FileAccess.file_exists(TRAY_RELOAD_REQUEST):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(TRAY_RELOAD_REQUEST))
+	elif FileAccess.file_exists(TRAY_RELOAD_REQUEST) or _read_blueprint_selection() != _blueprint_selection:
+		if FileAccess.file_exists(TRAY_RELOAD_REQUEST):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(TRAY_RELOAD_REQUEST))
 		_reload_panel_data()
 	if FileAccess.file_exists(TRAY_OPEN_PANEL_REQUEST):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(TRAY_OPEN_PANEL_REQUEST))
@@ -379,13 +435,19 @@ func _process(delta: float) -> void:
 	_clouds.update_clouds(delta, world.wallpaper_sky_area(), _weather.cloud_cover)
 	if simulation.state.finished:
 		if Time.get_ticks_msec() >= _restart_at_msec:
+			var placements := simulation.state.placed_count()
+			var restarted := _start_cycle()
 			if _acceptance:
+				if not restarted or simulation.state.placed_count() != 0 or simulation.state.finished \
+						or simulation.state.target_count() != placements or not simulation.state.validate().is_empty():
+					push_error("Wallpaper verification failed to reset the construction.")
+					get_tree().quit(1)
+					return
 				_completed_cycles += 1
-				print("Verified cycle %d: 900 bricks and 5000 ms hold" % _completed_cycles)
+				print("Verified cycle %d: %d bricks and %d ms hold" % [
+					_completed_cycles, placements, COMPLETED_DISPLAY_MSEC])
 				if _completed_cycles == 2:
 					get_tree().quit()
-					return
-			_start_cycle()
 		return
 
 	_accumulator += _step * 256 if _acceptance else minf(delta, 0.25) * _time_scale
@@ -401,7 +463,7 @@ func _process(delta: float) -> void:
 			_save_progress()
 		world.play_production(events)
 		if simulation.state.finished:
-			if _acceptance and (simulation.state.placed_count() != 900
+			if _acceptance and (simulation.state.placed_count() != simulation.state.target_count()
 					or not simulation.state.validate().is_empty()):
 				get_tree().quit(1)
 				return
@@ -409,7 +471,8 @@ func _process(delta: float) -> void:
 			_restart_at_msec = Time.get_ticks_msec() + COMPLETED_DISPLAY_MSEC
 			return
 
-	world.render_frame(_accumulator / _step, simulation.elapsed_seconds())
+	var sled_jump := _sled_music.jump_height(delta) if _sled_music != null else 0.0
+	world.render_frame(_accumulator / _step, simulation.elapsed_seconds(), sled_jump)
 
 
 func _save_progress(reset_progress := false) -> bool:

@@ -135,6 +135,12 @@ func _advance(wallpaper) -> void:
 
 func _first_lift(wallpaper) -> void:
 	var seen := {}
+	var checked_crank := false
+	var overseer: Walk = wallpaper.world.overseer._walker
+	_check(is_equal_approx(overseer.scale.y, 0.9375), "Overseer uses 75% of the original worker scale")
+	for view: Dictionary in wallpaper.world._views.values():
+		if view.has("walker"):
+			_check(is_equal_approx(view.walker.scale.y, overseer.scale.y), "Workers and overseer share one scale")
 	for tick in range(PLAY_MAX_TICKS):
 		var state: State = wallpaper.simulation.state
 		var builder := state.worker(BUILDER)
@@ -148,9 +154,14 @@ func _first_lift(wallpaper) -> void:
 		if builder.fsm_state == &"operate_lift":
 			var view: Dictionary = wallpaper.world._views[BUILDER]
 			_check(view.cranking, "Builder operates the crank during lift travel")
+			var walker: Walk = view.walker
+			if not checked_crank and walker._near_arm.z_index == 1:
+				_check_crank_orbit(wallpaper.world, walker)
+				checked_crank = true
 		if builder.fsm_state == &"walk_to_brick":
 			_check(state.stock_count(BUILDER) == 1, "Builder hauls one brick from the landing")
 		if state.placed_count() == 60:
+			_check(checked_crank, "Builder reached the scaled crank")
 			_check(state.current_row == 1 and state.completed_rows == 1, "First upper brick stays on row 1")
 			_check(builder.fsm_state == &"return_to_platform" and state.stock_count(BUILDER) == 0,
 				"Builder returns empty after brick 60")
@@ -171,16 +182,20 @@ func _row_end(wallpaper) -> void:
 	var seen_rebuild := false
 	var seen_climb := false
 	var checked_edge := false
+	var old_road := PackedVector2Array()
 	for tick in range(PLAY_MAX_TICKS):
 		var state: State = wallpaper.simulation.state
 		var builder := state.worker(BUILDER)
 		var deck: Sprite2D = wallpaper.world._deck
 		if builder.fsm_state == &"rebuild_platform":
 			seen_rebuild = true
-			_check(not wallpaper.world._scaffold_root.visible, "Scaffolds hide during rebuilding")
+			_check(wallpaper.world._scaffold_root.visible, "Scaffolds stay visible during rebuilding")
 		if builder.fsm_state == &"climb_to_platform":
 			seen_climb = true
 			_check(state.current_row == 2 and state.row_start == 116, "New row starts after brick 116")
+			_check(state.scaffold_paths.size() == 2 and state.scaffold_paths[0] == old_road
+				and state.scaffold_paths[1][-1] == state.delivery_point,
+				"Two rows share the old floor and the new floor ends at delivery")
 		if state.placed_count() == 116 and builder.fsm_state == &"return_to_platform":
 			seen_return = true
 			_check(state.completed_rows == 2 and state.current_row == 1, "Row completes once before rebuilding")
@@ -195,8 +210,9 @@ func _row_end(wallpaper) -> void:
 		await _advance(wallpaper)
 		if before == 115 and state.placed_count() == 116:
 			var route := builder.movement_route()
-			_check(not route.is_empty(), "Row-end return route exists: %s pos=%s waiting=%s" % [
-				builder.fsm_state, str(builder.position), str(wallpaper.simulation._construction.waiting_snapshot())])
+			old_road = state.scaffold_paths[0]
+			_check(not route.is_empty() and old_road.has(route[-1]),
+				"Return uses the existing row before the next road is built")
 			if not route.is_empty():
 				_check(wallpaper.world._scaffold_root.visible and not deck.visible
 					and route[0].is_equal_approx(builder.position),

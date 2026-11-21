@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory, Position = 0)]
     [ValidateSet('first-lift', 'row-end', 'completion', 'transfer-resume', 'small-completion', 'all',
-        'fast', 'placed-surfaces', 'placed-routes', 'scaffold-sections', 'scaffold-acceptance',
+        'fast', 'placed-surfaces', 'scaffold-acceptance',
         'construction-routes', 'builder-large-step', 'lift-scaffold-delivery', 'stone-sources',
         'storage-grounding', 'sled-cargo-layout', 'blueprint-mixed-domain', 'blueprint-scene')]
     [string]$Scenario,
@@ -33,10 +33,10 @@ if (!$OutputDirectory) {
     $OutputDirectory = Join-Path ([IO.Path]::GetTempPath()) ('piramida-scenarios-' + [guid]::NewGuid())
 }
 $output = (New-Item -ItemType Directory -Force -Path $OutputDirectory).FullName
-$fastChecks = @('placed-surfaces', 'placed-routes', 'scaffold-sections', 'scaffold-acceptance',
+$fastChecks = @('placed-surfaces', 'scaffold-acceptance',
     'construction-routes', 'builder-large-step', 'lift-scaffold-delivery', 'stone-sources',
     'storage-grounding', 'sled-cargo-layout')
-$scenarios = if ($Scenario -eq 'all') { @('first-lift', 'row-end', 'completion', 'transfer-resume') }
+$scenarios = if ($Scenario -eq 'all') { @('first-lift', 'row-end', 'small-completion', 'transfer-resume') }
     elseif ($Scenario -eq 'fast') { $fastChecks }
     else { @($Scenario) }
 $previousAppData = $env:APPDATA

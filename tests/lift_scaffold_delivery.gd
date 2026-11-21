@@ -5,61 +5,70 @@ const Wallpaper = preload("res://scripts/application/wallpaper.gd")
 const State = preload("res://scripts/domain/game_state.gd")
 const Construction = preload("res://scripts/simulation/construction_production.gd")
 
+
 func _initialize() -> void:
 	var balance: Dictionary = Wallpaper.wallpaper_balance(JSON.parse_string(
 		FileAccess.get_file_as_string("res://data/balance.json")))
-	var checked := Blueprint.validate({"version": 2, "blocks": [
-		{"x": 0, "y": 0, "size": 4, "type": "stone"},
-		{"x": 4, "y": 0, "size": 2, "type": "stone"},
-		{"x": 6, "y": 0, "size": 1, "type": "stone"},
-		{"x": 58, "y": 0, "size": 1, "type": "stone"},
-		{"x": 6, "y": 1, "size": 1, "type": "stone"},
-	]})
-	balance.world["blueprintBlocks"] = checked.blocks
+	balance.world.blueprintBlocks = Blueprint.validate({"version": 2, "blocks": [
+		{"x": 0, "y": 0, "size": 4},
+		{"x": 6, "y": 0},
+		{"x": 58, "y": 0},
+		{"x": 6, "y": 1},
+		{"x": 8, "y": 1, "size": 4},
+	]}).blocks
 	var state := State.new(balance)
-	for id in range(4):
+	for id in range(3):
 		state._move(id, State.Owner.UNMINED, State.Owner.PLACED)
 	state.current_row = 1
-	state.row_start = 4
+	state.row_start = 3
 	state.completed_rows = 1
 	var production := Construction.new(state, balance)
-	production._refresh_routes()
-	var target: Vector2 = state.geometry.brick_origin(1, 0)
-	var landing := state.delivery_point
-	print("delivery=", landing, " target=", target, " old=", state.geometry.platform(1))
-	if not landing.is_finite() or landing.distance_to(target) > 3.0 * state.geometry.brick_size().x:
-		push_error("Delivery must land on a nearby scaffold")
-		quit(1)
-		return
-	state._move(4, State.Owner.UNMINED, State.Owner.FINISHED)
-	production._start_manual_lift(State.Owner.MINER)
-	var route := state.worker(State.Owner.LIFT).movement_route()
-	if route.is_empty() or not route[-1].is_equal_approx(landing):
-		push_error("Lift route ends away from delivery")
-		quit(1)
-		return
-	for event in state.worker(State.Owner.LIFT).advance(100.0):
-		production.apply_completion(event)
-	if state.stock_count(State.Owner.PLATFORM) != 1 \
-			or not state.delivery_point.is_equal_approx(landing):
-		push_error("Lift cargo was not unloaded on the selected scaffold")
-		quit(1)
-		return
-	var saved: Array = state.to_dict().delivery_point
-	if saved.size() != 2 or not Vector2(saved[0], saved[1]).is_equal_approx(landing):
-		push_error("Delivery point was not saved")
-		quit(1)
-		return
 	var builder := state.worker(state.active_builder_id)
-	for tick in range(1000):
-		for event in builder.advance(0.1):
-			production.apply_completion(event)
-		if state.placed_count() == 5:
-			break
-		production.assign_tasks()
-	if state.placed_count() != 5:
-		push_error("Builder failed to collect and place scaffold cargo: %s" % builder.fsm_state)
-		quit(1)
-		return
-	print("PASS: lift delivery and placement near next block")
+	var lift := state.worker(State.Owner.LIFT)
+	var miner := state.worker(State.Owner.MINER)
+	var dresser := state.worker(State.Owner.DRESSER)
+	dresser.position = state.geometry.lift_operator_position()
+	var previous_tip := Vector2.INF
+	for id in [3, 4]:
+		var tip := state.scaffold_paths[-1][-1]
+		assert(tip != previous_tip and state.delivery_point == tip)
+		state._move(id, State.Owner.UNMINED, State.Owner.FINISHED)
+		var operator := miner
+		if id == 3:
+			operator = dresser
+			builder.position = tip
+			production.assign_assistance()
+			assert(state.lift_operator_id() == dresser.id)
+			_advance(production, dresser, 0.1)
+			assert(dresser.fsm_state == &"operate_lift")
+		else:
+			production._start_manual_lift(miner.id)
+		var route := lift.movement_route()
+		var reach := state.geometry.brick_size().y * state.geometry.block_size_for_resource(id)
+		assert(route.size() == 4 and route[-1] == tip)
+		assert(is_equal_approx(route[2].y + reach + state.geometry.lift_suspension(),
+			state.geometry.lift_cable_height(1)))
+		assert(state.stock(State.Owner.LIFT) == [id])
+		_advance(production, lift, 100.0)
+		_advance(production, operator, 100.0)
+		if operator == dresser:
+			assert(dresser.position == state.geometry.workshop())
+		assert(state.stock(State.Owner.PLATFORM) == [id] and state.platform_position() == tip)
+		var saved: Array = state.to_dict().delivery_point
+		assert(Vector2(saved[0], saved[1]).is_equal_approx(tip))
+
+		for tick in range(1000):
+			production.assign_tasks()
+			_advance(production, builder, 0.1)
+			if state.placed_count() == id + 1:
+				break
+		assert(state.placed_count() == id + 1 and state.owner_of(id) == State.Owner.PLACED)
+		previous_tip = tip
+	assert(state.finished and state.validate().is_empty())
+	print("PASS: successive 1x1 and 4x4 deliveries unload at their own scaffold tips")
 	quit()
+
+
+func _advance(production: Construction, worker: State.Worker, seconds: float) -> void:
+	for event in worker.advance(seconds):
+		production.apply_completion(event)

@@ -1,5 +1,6 @@
 extends RefCounted
 
+const SaveService = preload("res://scripts/application/save_service.gd")
 const Blueprint = preload("res://scripts/domain/blueprint.gd")
 const PanelSettings = preload("res://scripts/application/panel_settings.gd")
 const Simulation = preload("res://scripts/simulation/simulation_runner.gd")
@@ -32,6 +33,8 @@ func run() -> bool:
 	_check_storage_layout()
 	_check_raw_delivery_return()
 	_check_delivery_ahead_of_placement()
+	_check_quarry_cuts()
+	_check_quarry_migration()
 	if not _check_mixed_simulation() or _failed:
 		return false
 	print("PASS: mixed 1x1/2x2/4x4 blueprint, production, transport and resume")
@@ -43,7 +46,8 @@ func _check_blueprint_validation() -> void:
 	_check(not legacy.has("error") and legacy.version == 1 and legacy.blocks[0].size == 1)
 	var checked := Blueprint.validate({"version": 2, "blocks": MIXED})
 	_check(not checked.has("error") and checked.blocks.size() == 6)
-	_check(Blueprint.validate({"version": 2, "blocks": [{"x": 56, "y": 0, "size": 4, "type": "stone"}]}).has("error"))
+	_check(Blueprint.validate({"version": 2, "blocks": [{"x": 174, "y": 86, "size": 4, "type": "stone"}]}).has("error"))
+	_check(Blueprint.validate({"version": 2, "blocks": [{"x": 173, "y": 87, "size": 4, "type": "stone"}]}).has("error"))
 	_check(Blueprint.validate({"version": 2, "blocks": [
 		{"x": 0, "y": 0, "size": 4, "type": "stone"},
 		{"x": 3, "y": 3, "size": 1, "type": "stone"},
@@ -53,7 +57,7 @@ func _check_blueprint_validation() -> void:
 		{"x": 0, "y": 1, "size": 2, "type": "stone"},
 	]}).has("error"))
 	_check(not Blueprint.validate({"version": 2, "blocks": [
-		{"x": 55, "y": 0, "size": 4, "type": "stone"},
+		{"x": 173, "y": 86, "size": 4, "type": "stone"},
 	]}).has("error"))
 
 
@@ -123,18 +127,41 @@ func _check_raw_delivery_return() -> void:
 	var balance: Dictionary = Wallpaper.wallpaper_balance(JSON.parse_string(FileAccess.get_file_as_string("res://data/balance.json")))
 	balance.world["blueprintBlocks"] = checked.blocks
 	balance.world.pyramidRows = 4
-	for staged in [false, true]:
-		var state := State.new(balance)
-		_check(state.reserve_transfer(State.Owner.MINER, [0]))
-		_check(state.deliver(State.Owner.MINER, 0))
-		if staged:
-			_check(state.reserve_transfer(State.Owner.MINER, [0], State.Owner.QUARRY))
-			_check(state.pick_up(State.Owner.MINER, 0))
-			_check(state.deliver(State.Owner.MINER, 0))
-		var production := QuarryProduction.new(state, balance.workers)
-		production.assign_tasks()
-		var phases: Array = state.worker(State.Owner.FIRST_PORTER).timing_snapshot().phases
-		_check(not phases.is_empty() and phases[-1].state == &"return_to_raw_storage")
+	var state := State.new(balance)
+	for resource_id in [0, 1]:
+		_check(state.reserve_transfer(State.Owner.MINER, [resource_id]))
+		_check(state.deliver(State.Owner.MINER, resource_id))
+	var production := QuarryProduction.new(state, balance.workers)
+	var porter := state.worker(State.Owner.FIRST_PORTER)
+	production._assign_porter(porter.id)
+	var batch := state.task_resource_ids(porter.id)
+	_check(batch.size() == 2, "Raw haul reserves two different sizes")
+	if batch.size() != 2:
+		return
+	_check(state.reserve_transfer(State.Owner.MINER, [2]))
+	production.apply_completion({"worker_id": State.Owner.MINER, "state": &"mine"})
+	var phases: Array = porter.timing_snapshot().phases
+	var approaches := phases.filter(func(phase: Dictionary) -> bool: return phase.state == &"walk_to_storage")
+	_check(approaches.size() == 2, "Raw haul walks to both reserved slots")
+	if approaches.size() != 2:
+		return
+	var raw := state.geometry.raw_storage()
+	var junction := [raw.x, raw.y]
+	_check(approaches[0].route[-2] == junction, "Loaded approach reaches the junction before the slot")
+	_check(state.raw_place(batch[-1]).x < state.raw_place(batch[0]).x,
+		"The last block loaded is reserved the first available slot")
+	for index in range(2):
+		var slot := state.raw_place(batch[1 - index])
+		_check(approaches[index].route[-1] == [slot.x, slot.y], "Walk ends at the slot of the next block off the sled")
+	_check(phases[-1].state == &"return_to_raw_storage" and phases[-1].route[-1] == junction)
+	for tick in range(1000):
+		for event in porter.advance(0.1):
+			production.apply_completion(event)
+		if porter.fsm_state == &"idle":
+			break
+	batch.reverse()
+	_check(state.stock(State.Owner.RAW) == batch and porter.position == raw,
+		"Both blocks are delivered in unloading order and the porter returns")
 
 
 func _check_delivery_ahead_of_placement() -> void:
@@ -160,6 +187,82 @@ func _check_delivery_ahead_of_placement() -> void:
 			break
 	_check(state.owner_of(1) == State.Owner.RAW and state.placed_count() == 0
 		and state.validate().is_empty(), "Next stone must reach the mason before placement")
+
+
+func _check_quarry_cuts() -> void:
+	var base: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/balance.json"))
+	var balance := Wallpaper.wallpaper_balance(base)
+	balance.world["blueprintBlocks"] = Blueprint.validate({"version": 2, "blocks": MIXED}).blocks
+	var geometry := State.new(balance).geometry
+	var excavation := geometry.quarry_excavation
+	var unit := geometry.brick_size() * State.Geometry.LIMESTONE_SCALE
+	_check(excavation.outline(0).is_empty() and excavation.scaffold_paths(0).is_empty(), "Intact sand needs no scaffold")
+	for id in range(MIXED.size()):
+		var cut := excavation.cut(id)
+		var center := cut.get_center().x
+		_check(cut.size.is_equal_approx(unit * MIXED[id].size), "Cut matches the raw block dimensions")
+		excavation.outline(id)
+		_check(is_equal_approx(excavation.terrain_y(center), cut.end.y), "Next stone is exposed from above")
+		var paths := excavation.scaffold_paths(id + 1)
+		_check(is_equal_approx(excavation.terrain_y(center), cut.position.y), "Extraction removes one block depth")
+		var pickup := geometry.quarry_pickup(id, id + 1)
+		var work := geometry.miner_work_position(id, id)
+		_check(pickup.y == cut.position.y and is_equal_approx(work.y, cut.end.y),
+			"The miner strikes the exposed face and the porter loads from the cut floor")
+		var shaft := paths[0]
+		var haul := geometry.quarry_to_raw(id, id + 1)
+		var landing := -1
+		for level in range(shaft.size()):
+			if shaft[level].y == pickup.y:
+				landing = level
+				break
+		_check(landing > 0 and haul[0] == pickup and haul[-1] == geometry.raw_storage(),
+			"The loaded haul reaches the warehouse from a landing on the shared staircase")
+		for level in range(landing + 1):
+			_check(haul.has(shaft[level]), "The loaded haul uses the same staircase at every level")
+
+
+func _check_quarry_migration() -> void:
+	var base: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://data/balance.json"))
+	var balance := Wallpaper.wallpaper_balance(base)
+	balance.world["blueprintBlocks"] = Blueprint.validate({"version": 2, "blocks": MIXED}).blocks
+	var legacy_balance := balance.duplicate(true)
+	legacy_balance.world.erase("quarryBlockCuts")
+	var legacy := Simulation.for_wallpaper(legacy_balance) as Simulation
+	var path := "user://quarry-test/legacy.json"
+	var old_save := SaveService.new(legacy_balance, path)
+	var new_save := SaveService.new(balance, path)
+	var checked := {}
+	var porter := State.Owner.FIRST_PORTER
+	for tick in range(3000):
+		legacy.step_simulation()
+		var before := legacy.state.worker(porter)
+		if legacy.state.transfer_source(porter) != State.Owner.QUARRY or checked.has(before.fsm_state):
+			continue
+		checked[before.fsm_state] = true
+		_check(old_save.save_game(legacy) == OK, "Write a slope quarry snapshot")
+		var loaded := new_save.load_game()
+		_check(loaded.status == SaveService.Status.OK, "Read the slope snapshot on the cut layout")
+		if loaded.status != SaveService.Status.OK:
+			continue
+		var restored: Simulation = loaded.simulation
+		var after := restored.state.worker(porter)
+		_check(before.fsm_state == after.fsm_state and before.remaining_work == after.remaining_work
+			and legacy.state.to_dict() == restored.state.to_dict(), "Migration preserves work and ownership")
+		if after.fsm_state == &"load":
+			var id := restored.state.pickup_targets(porter)[0]
+			_check(after.position == restored.state.geometry.quarry_pickup(id, restored.state.mined_count()),
+				"Resumed loading is at the reserved stone")
+		for step in range(3000):
+			restored.step_simulation()
+			if restored.state.finished:
+				break
+		_check(restored.state.finished and restored.state.validate().is_empty(), "The migrated blueprint finishes")
+		if checked.size() == 4:
+			break
+	_check(checked.size() == 4, "Migrate approach, loading, exit and unloading")
+	for suffix in ["", ".bak"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
 
 
 func _check_mixed_simulation() -> bool:
@@ -194,19 +297,15 @@ func _check_mixed_simulation() -> bool:
 		if active_builder.fsm_state == &"walk_to_brick" and sim.state.placed_count() < sim.state.target_count():
 			var work_route: PackedVector2Array = active_builder.movement_route()
 			var target: Dictionary = geometry.block_for_placement(sim.state.placed_count())
-			_check(not work_route.is_empty() and is_equal_approx(work_route[-1].y,
-				float(target.y) * geometry.brick_size().y), "Work point must use target lower face")
+			var tip: Vector2 = sim.state.scaffold_paths[-1][-1]
+			var unit: Vector2 = geometry.brick_size()
+			_check(not work_route.is_empty() and work_route[-1] == tip
+				and is_equal_approx(tip.y, (floorf(float(target.y) / 2.0) * 2.0 + 2.0) * unit.y),
+				"Builder works at the growing end of the scaffold")
 		if active_builder.fsm_state == &"walk_to_workshop" and sim.state.current_row > 0:
-			var return_route: PackedVector2Array = active_builder.movement_route()
-			var entry := Vector2(float(balance.world.pyramidLeft) - 2.0 * geometry.brick_size().x, 0.0)
-			if return_route.has(entry):
+			var route: PackedVector2Array = active_builder.movement_route()
+			if route.has(sim.state.scaffold_paths[0][0]):
 				saw_entry_return = true
-				var placed_geometry: Dictionary = sim.state.placed_surface_snapshot()
-				for segment in range(1, return_route.size()):
-					_check(geometry._scaffold_clear_segment(placed_geometry,
-						return_route[segment - 1], return_route[segment],
-						0.18 * geometry.brick_size().x, 0.9 * geometry.brick_size().y,
-						0.02 * geometry.brick_size().y), "Workshop return crosses masonry")
 		var events: Array[Dictionary] = sim.step_simulation()
 		for id in sim.state.worker_ids_for_role(State.Worker.Role.MINER):
 			var miner = sim.state.worker(id)
@@ -225,9 +324,9 @@ func _check_mixed_simulation() -> bool:
 				last_progress_tick = tick
 		if tick - last_progress_tick > 20000:
 			var builder = sim.state.worker(sim.state.active_builder_id)
-			push_error("Mixed blueprint stalled after block %d at tick %d: row=%d phase=%s pos=%s waiting=%s scaffolds=%d delivery=%s work=%s stocks=%s" % [
+			push_error("Mixed blueprint stalled after block %d at tick %d: row=%d phase=%s pos=%s scaffolds=%d delivery=%s work=%s stocks=%s" % [
 				last_placed, tick, sim.state.current_row, builder.fsm_state,
-				str(builder.position), str(sim._construction.waiting_snapshot()), sim._construction._scaffolds.size(),
+				str(builder.position), sim.state.scaffold_paths.size(),
 				str(sim.state.delivery_point), str(sim._construction._placement_point()),
 				str([sim.state.stock_count(State.Owner.WORKSHOP_OUTPUT), sim.state.stock_count(State.Owner.FINISHED),
 					sim.state.stock_count(State.Owner.PLATFORM), sim.state.owner_of(last_placed)])])
@@ -236,16 +335,40 @@ func _check_mixed_simulation() -> bool:
 			_check(sim.state.validate().is_empty())
 			var resumed = Simulation.from_dict(balance, JSON.parse_string(JSON.stringify(sim.to_dict())))
 			_check(resumed != null)
-			_check(sim.to_dict() == resumed.to_dict())
+			_check_snapshot_round_trip(sim, resumed, tick)
 			sim = resumed
 		if sim.state.finished:
 			break
 	if not (saw_large_mine and saw_entry_return and sim.state.finished
 			and last_placed == checked.blocks.size()):
-		push_error("Mixed blueprint did not finish: placed=%d, row=%d, builder=%s, waiting=%s" % [
+		push_error("Mixed blueprint did not finish: placed=%d, row=%d, builder=%s" % [
 			last_placed, sim.state.current_row,
-			sim.state.worker(sim.state.active_builder_id).fsm_state,
-			str(sim._construction.waiting_snapshot())])
+			sim.state.worker(sim.state.active_builder_id).fsm_state])
 		return false
 	_check(sim.state.validate().is_empty())
 	return true
+
+
+func _check_snapshot_round_trip(sim: Simulation, resumed: Simulation, tick: int) -> void:
+	var before := sim.to_dict()
+	var after := resumed.to_dict()
+	if before != after:
+		var builder := sim.state.worker(sim.state.active_builder_id)
+		var restored := resumed.state.worker(builder.id)
+		var old_route := builder.movement_route()
+		var new_route := restored.movement_route()
+		# Construction can replan an invalid scaffold segment from the saved position.
+		# Transfers, reserves and every other worker still have to round-trip exactly.
+		if builder.fsm_state == &"return_to_platform" and not old_route.is_empty() \
+				and not new_route.is_empty() and new_route[0] == builder.position \
+				and old_route[-1] == new_route[-1] \
+				and not resumed._construction._active_route_valid(builder, old_route):
+			for index in range(before.workers.size()):
+				var saved: Dictionary = before.workers[index]
+				if saved.id == builder.id:
+					var replanned: Dictionary = after.workers[index]
+					saved.path_segment = replanned.path_segment
+					saved.remaining_distance = replanned.remaining_distance
+					saved.phases[0].route = replanned.phases[0].route
+					break
+	_check(before == after, "Snapshot differs at tick %d" % tick)

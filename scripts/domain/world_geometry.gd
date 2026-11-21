@@ -2,11 +2,19 @@ extends RefCounted
 ## Logical coordinates, with Y increasing upwards.
 ## Invalid cell and row lookups return null. Invalid routes are empty.
 
+const QuarryExcavation = preload("res://scripts/domain/quarry_excavation.gd")
 const QuarrySlopes = preload("res://scripts/domain/quarry_slopes.gd")
+const LIMESTONE_SCALE := 1.15
+const OVERVIEW_GROUND_FROM_BOTTOM := 0.20
+const OVERVIEW_QUARRY_MARGIN := 0.05
+const OVERVIEW_QUARRY_PADDING := 0.6
+const QUARRY_SHIFT_X := -4.4
+const RAW_STORAGE_SHIFT_X := -7.80
 
 var _world: Dictionary
 var _lift: Dictionary
 var quarry_slopes: QuarrySlopes
+var quarry_excavation: QuarryExcavation
 var _quarry_cells: Array[Vector2i] = []
 var _opened_depth := PackedInt32Array([0])
 var _blueprint_rows: Array[Array] = []
@@ -16,6 +24,7 @@ var _blueprint_blocks: Array[Dictionary] = []
 
 func _init(balance: Dictionary) -> void:
 	_world = balance["world"].duplicate()
+	_world.quarryCenterX += QUARRY_SHIFT_X
 	_lift = balance["lift"].duplicate()
 	if _world.has("blueprintBlocks"):
 		_blueprint_blocks = _world.blueprintBlocks.duplicate(true)
@@ -25,7 +34,12 @@ func _init(balance: Dictionary) -> void:
 				_blueprint_levels.append(level)
 				_blueprint_rows.append([])
 			_blueprint_rows[-1].append(block)
-	if _world.get("quarrySlopesOnly", false):
+	if _world.get("quarryBlockCuts", false):
+		var width := (quarry_layers() * 2 - 1) * float(_world.quarryStepX)
+		quarry_excavation = QuarryExcavation.new(_world, brick_size() * LIMESTONE_SCALE,
+			width, resource_sizes(), block_count(), pyramid_width() * 0.5)
+		quarry_slopes = quarry_excavation
+	elif _world.get("quarrySlopesOnly", false):
 		quarry_slopes = QuarrySlopes.new(_world)
 	# Each pass adds the shoulders from the top down, then opens the next floor.
 	for depth in range(quarry_layers()):
@@ -74,11 +88,11 @@ func quarry_grid_point(cell: Vector2) -> Vector2:
 
 
 func quarry_mouth() -> Vector2:
-	return quarry_grid_point(Vector2.ZERO)
+	return quarry_excavation.mouth() if quarry_excavation != null else quarry_grid_point(Vector2.ZERO)
 
 
 func raw_storage() -> Vector2:
-	return Vector2(_world.rawStorageX, 0)
+	return Vector2(raw_storage_bounds().x - 0.10, 0)
 
 
 func workshop() -> Vector2:
@@ -91,12 +105,12 @@ func workshop_pickup() -> Vector2:
 
 
 func raw_storage_bounds() -> Vector2:
-	# The clear strip between the canopy's right post and the lift operator's path.
-	return Vector2(workshop().x + 2.55, lift_operator_position().x - 0.30)
+	# Leave clearance to the canopy's left post.
+	return Vector2(workshop().x - 5.25, workshop().x - 2.55)
 
 
 func raw_block_width(resource_id: int) -> float:
-	# stone.png visible alpha bounds: 46 px, drawn at 0.94 scale.
+	# Keep the same slot widths when restoring saved raw positions.
 	return 46.0 * 0.94 * block_size_for_resource(resource_id) / 100.0
 
 
@@ -118,6 +132,8 @@ func quarry_edge(layer: int, side: int, mined: int) -> Vector2:
 
 
 func quarry_pickup(resource_id: int, mined: int = 0) -> Vector2:
+	if quarry_excavation != null:
+		return quarry_excavation.pickup_position(resource_id)
 	var cell := quarry_grid_cell(resource_id)
 	if quarry_slopes != null:
 		return quarry_slopes.point(quarry_grid_point(cell).x, mined)
@@ -125,17 +141,14 @@ func quarry_pickup(resource_id: int, mined: int = 0) -> Vector2:
 
 
 func miner_work_position(resource_id: int, mined: int) -> Vector2:
+	if quarry_excavation != null:
+		return quarry_excavation.work_position(resource_id)
 	var position := quarry_grid_point(quarry_grid_cell(resource_id))
 	return quarry_slopes.point(position.x, mined) if quarry_slopes != null else position
 
 
-func quarry_stock() -> Vector2:
-	return quarry_grid_point(Vector2(quarry_layers() - 0.5, 0)) + Vector2(1.5, 0)
-
-
-func quarry_to_stock(resource_id: int, mined: int) -> PackedVector2Array:
-	return _quarry_route(quarry_pickup(resource_id, mined), quarry_grid_cell(resource_id).y + 1,
-		quarry_stock(), 0, mined, 1)
+func legacy_quarry_stock() -> Vector2:
+	return quarry_grid_point(Vector2(quarry_layers() - 0.5, 0)) + Vector2(1.5 - QUARRY_SHIFT_X, 0)
 
 
 func miner_to_pickup(previous_id: int, target_id: int) -> PackedVector2Array:
@@ -145,18 +158,22 @@ func miner_to_pickup(previous_id: int, target_id: int) -> PackedVector2Array:
 		quarry_pickup(target_id, mined), quarry_grid_cell(target_id).y + 1, mined)
 
 
-func quarry_stock_to_miner(previous_id: int) -> PackedVector2Array:
+func raw_to_miner(previous_id: int, start: Vector2) -> PackedVector2Array:
 	var previous := quarry_grid_cell(previous_id)
 	var mined := previous_id + 1
-	return _quarry_route(quarry_stock(), 0, miner_work_position(previous_id, mined), previous.y, mined, 1)
+	var route := _quarry_route(raw_storage(), 0, miner_work_position(previous_id, mined), previous.y, mined, 1)
+	if start != route[0]:
+		route.insert(0, start)
+	return route
 
 
-func miner_to_lift_operator() -> PackedVector2Array:
+func miner_to_lift_operator(mined_count: int = -1, start := Vector2.INF) -> PackedVector2Array:
 	if quarry_slopes != null:
-		var mined := quarry_count()
-		return quarry_slopes.route(miner_work_position(mined - 1, mined), raw_storage(), mined) \
+		var mined := quarry_count() if mined_count < 0 else mined_count
+		var entry := miner_work_position(mined - 1, mined) if start == Vector2.INF else start
+		return quarry_slopes.route(entry, raw_storage(), mined) \
 			+ PackedVector2Array([lift_operator_position()])
-	var route := quarry_stock_to_miner(quarry_count() - 1)
+	var route := raw_to_miner(quarry_count() - 1, raw_storage())
 	route.reverse()
 	route.append(lift_operator_position())
 	return route
@@ -180,6 +197,8 @@ func quarry_between_pickups(first_id: int, last_id: int, mined: int) -> PackedVe
 
 func miner_to_next_cell(previous_id: int) -> PackedVector2Array:
 	if previous_id == -1:
+		if quarry_excavation != null:
+			return quarry_excavation.route(quarry_mouth(), miner_work_position(0, 0), 0)
 		return PackedVector2Array([quarry_mouth()])
 	var first := quarry_grid_cell(previous_id)
 	var last := quarry_grid_cell(previous_id + 1)
@@ -272,6 +291,12 @@ func block_size_for_resource(resource_id: int) -> int:
 	return int(_blueprint_blocks[resource_id].get("size", 1))
 
 
+func texture_for_resource(resource_id: int, raw: bool) -> String:
+	if resource_id < 0 or resource_id >= _blueprint_blocks.size():
+		return ""
+	return _blueprint_blocks[resource_id].get("rawTexture" if raw else "finishedTexture", "")
+
+
 func resource_sizes() -> Array[int]:
 	var sizes: Array[int] = []
 	for resource_id in range(900):
@@ -328,7 +353,7 @@ func platform(row: int) -> Variant:
 		return null
 	if not _blueprint_rows.is_empty():
 		if row == 0:
-			return first - Vector2(_world.platformOffset, 0)
+			return Vector2(first.x - float(_world.platformOffset), 0.0)
 		# Keep the landing outside every placed block, including tall blocks
 		# from earlier stages that can surround the next stage's first block.
 		var right_edge := 0
@@ -339,13 +364,13 @@ func platform(row: int) -> Variant:
 	return first - Vector2(_world.platformOffset, 0)
 
 
-func lift_route(row: int, landing: Variant = null) -> PackedVector2Array:
+func lift_route(row: int, landing: Variant = null, cargo_size: int = 0) -> PackedVector2Array:
 	var destination: Variant = landing if landing != null else platform(row)
 	if destination == null or row == 0:
 		return PackedVector2Array()
 	var base := finished_storage()
 	if has_upper_delivery():
-		var next_size := int(block_for_placement(placement_start_for_stage(row)).get("size", 1))
+		var next_size := cargo_size if cargo_size > 0 else int(block_at(row, 0).size)
 		var travel_height := lift_cable_height(row) - lift_suspension() - brick_size().y * next_size
 		return PackedVector2Array([
 			base, Vector2(base.x, travel_height),
@@ -360,31 +385,6 @@ func lift_operator_position() -> Vector2:
 	return finished_storage() - Vector2(0.85, 0)
 
 
-func platform_to_lift_operator(row: int) -> PackedVector2Array:
-	var landing: Vector2 = platform(row)
-	var base := finished_storage()
-	if has_pyramid_ramp():
-		if row == 0:
-			return PackedVector2Array([base, lift_operator_position()])
-		return PackedVector2Array([landing, base, lift_operator_position()])
-	return PackedVector2Array([landing, Vector2(base.x, landing.y), base, lift_operator_position()])
-
-
-func has_pyramid_ramp() -> bool:
-	return _world.get("pyramidRamp", false)
-
-
-func pyramid_ramp_step(row: int = 0) -> Vector2:
-	if not _blueprint_rows.is_empty():
-		return Vector2(0, stage_top_height(row) - stage_height(row))
-	return Vector2(brick_size().x * int(_world.rowWidthDecrease) * 0.5, brick_size().y)
-
-
-func pyramid_deck_entry(row: int) -> Vector2:
-	var landing: Vector2 = platform(row)
-	return landing + pyramid_ramp_step(row) if row > 0 else landing
-
-
 func has_upper_delivery() -> bool:
 	return _world.has("liftCableClearance")
 
@@ -395,6 +395,31 @@ func lift_cable_height(row: int) -> float:
 
 func lift_suspension() -> float:
 	return float(_world.liftSuspension)
+
+
+func overview_bounds(quarry_frame: Rect2) -> Rect2:
+	var left := minf(-12.05, quarry_frame.position.x - OVERVIEW_QUARRY_PADDING)
+	var right := maxf(pyramid_right() + 1.25, quarry_frame.end.x + OVERVIEW_QUARRY_PADDING)
+	var top := -pyramid_top() - 1.8
+	var bottom := -quarry_frame.position.y
+	return Rect2(left, top, right - left, bottom - top)
+
+
+static func overview_zoom(bounds: Rect2, viewport_size: Vector2) -> float:
+	var width_zoom := viewport_size.x / bounds.size.x
+	var upper_zoom := viewport_size.y * (1.0 - OVERVIEW_GROUND_FROM_BOTTOM) / -bounds.position.y
+	var quarry_zoom := viewport_size.y * (OVERVIEW_GROUND_FROM_BOTTOM - OVERVIEW_QUARRY_MARGIN) / bounds.end.y
+	return minf(width_zoom, minf(upper_zoom, quarry_zoom))
+
+
+func pyramid_width() -> float:
+	var left := float(_world.pyramidLeft)
+	if not _blueprint_blocks.is_empty():
+		var first_column := int(_blueprint_blocks[0].x)
+		for block in _blueprint_blocks:
+			first_column = mini(first_column, int(block.x))
+		left += first_column * brick_size().x
+	return pyramid_right() - left
 
 
 func pyramid_right() -> float:
@@ -425,33 +450,8 @@ func rebuild_seconds() -> float:
 	return float(_lift.rebuildSeconds)
 
 
-func builder_to_brick(row: int, column: int) -> PackedVector2Array:
-	var brick: Variant = brick_origin(row, column)
-	if brick == null:
-		return PackedVector2Array()
-	var extent := brick_extent(row, column)
-	var start: Vector2 = platform(row)
-	var deck_y: float = stage_top_height(row) if row > 0 else brick.y
-	if has_pyramid_ramp() and row > 0:
-		var entry := pyramid_deck_entry(row)
-		return PackedVector2Array([start, entry, Vector2(brick.x + extent.x * 0.5, entry.y)])
-	return PackedVector2Array([
-		start, Vector2(start.x, deck_y), Vector2(brick.x + extent.x * 0.5, deck_y)
-	])
-
-
 func block_screen_extent(row: int, column: int) -> Vector2:
 	return brick_extent(row, column) * 100.0
-
-
-func platform_to_next_row(row: int) -> PackedVector2Array:
-	var start: Variant = platform(row)
-	var finish: Variant = platform(row + 1)
-	if start == null or finish == null:
-		return PackedVector2Array()
-	if has_pyramid_ramp():
-		return PackedVector2Array([start, finish])
-	return PackedVector2Array([start, Vector2(start.x, finish.y), finish])
 
 
 static func route_length(points: PackedVector2Array) -> float:
@@ -551,223 +551,3 @@ func support_below(snapshot: Dictionary, point: Vector2) -> Dictionary:
 ## snapshot for both navigation and drawing; no worker state is changed here.
 ## All dimensions are logical world units. A rejected candidate has an explicit
 ## reason and no partial geometry.
-func scaffold_snapshot(placed: Dictionary, landing: Vector2, work: Vector2,
-		settings: Dictionary = {}) -> Dictionary:
-	var unit := brick_size()
-	var width: float = float(settings.get("section_width", 4.0 * unit.x))
-	var post_width: float = float(settings.get("post_width", 0.20 * unit.x))
-	var max_post_height: float = float(settings.get("max_post_height", 5.0 * unit.y))
-	var max_span: float = float(settings.get("max_span", 4.0 * unit.x))
-	var max_void_width: float = float(settings.get("max_void_width", 2.0 * unit.x))
-	var max_void_depth: float = float(settings.get("max_void_depth", 4.0 * unit.y))
-	var max_transition_rise: float = float(settings.get("max_transition_rise", 4.0 * unit.y))
-	var max_transition_length: float = float(settings.get("max_transition_length", 5.0 * unit.x))
-	var worker_width: float = float(settings.get("worker_width", 0.18 * unit.x))
-	var worker_height: float = float(settings.get("worker_height", 0.9 * unit.y))
-	var clearance: float = float(settings.get("clearance", 0.02 * unit.y))
-	var result := {"ok": false, "reason": "invalid_settings", "sections": [],
-		"posts": [], "transitions": []}
-	if width <= post_width * 2.0 or post_width <= 0.0 or width > max_span \
-			or max_post_height < 0.0 or max_void_width < 0.0 or max_void_depth < 0.0 \
-			or max_transition_rise < 0.0 or max_transition_length <= 0.0 \
-			or worker_width <= 0.0 or worker_height <= 0.0:
-		return result
-	# Stable local positions. The work point remains within the deck in every try.
-	var step := unit.x * 0.25
-	var centered := work.x - width * 0.5
-	var offsets := [0, -1, 1, -2, 2, -3, 3, -4, 4]
-	var last_reason := "no_supported_position"
-	for offset in offsets:
-		var x0: float = centered + float(offset) * step
-		var x1 := x0 + width
-		if work.x < x0 + worker_width * 0.5 or work.x > x1 - worker_width * 0.5:
-			continue
-		var left := _scaffold_post(placed, x0, work.y, post_width, max_post_height)
-		var right := _scaffold_post(placed, x1 - post_width, work.y,
-			post_width, max_post_height)
-		if left.is_empty() or right.is_empty():
-			last_reason = "post_without_support"
-			continue
-		if not _scaffold_clear_segment(placed, Vector2(x0, work.y),
-				Vector2(x1, work.y), worker_width, worker_height, clearance):
-			last_reason = "deck_blocked"
-			continue
-		if not _scaffold_void_allowed(placed, x0, x1, work.y,
-				max_void_width, max_void_depth):
-			last_reason = "void_limit"
-			continue
-		var entry := Vector2(x0, work.y) if landing.x <= work.x else Vector2(x1, work.y)
-		if not is_equal_approx(landing.y, entry.y):
-			var direction := 1.0 if landing.x <= work.x else -1.0
-			entry.x = clampf((landing.x + work.x) * 0.5, x0, x1)
-			if (entry.x - landing.x) * direction < 0.1 * unit.x:
-				last_reason = "transition_too_steep"
-				continue
-		if absf(entry.y - landing.y) > max_transition_rise \
-				or entry.distance_to(landing) > max_transition_length:
-			last_reason = "transition_limit"
-			continue
-		if not _scaffold_clear_segment(placed, landing, entry,
-				worker_width, worker_height, clearance):
-			last_reason = "transition_blocked"
-			continue
-		var key := "deck:%0.4f:%0.4f:%0.4f" % [x0, x1, work.y]
-		left["id"] = key + ":left"
-		right["id"] = key + ":right"
-		result.ok = true
-		result.reason = ""
-		result.sections = [{"id": key, "x0": x0, "x1": x1, "y": work.y,
-			"post_ids": [left.id, right.id]}]
-		result.posts = [left, right]
-		result.transitions = [{"id": key + ":entry", "from": landing,
-			"to": entry, "kind": "level" if is_equal_approx(landing.y, entry.y) else "slope"}]
-		return result
-	result.reason = last_reason
-	return result
-
-
-## Builds an exact horizontal run. Every section is short enough for the
-## configured span and every joint has a post to actual masonry or ground.
-func scaffold_run_snapshot(placed: Dictionary, start: Vector2, finish: Vector2,
-		settings: Dictionary = {}) -> Dictionary:
-	var unit := brick_size()
-	var post_width: float = float(settings.get("post_width", 0.20 * unit.x))
-	var max_post_height: float = float(settings.get("max_post_height", 5.0 * unit.y))
-	var max_span: float = float(settings.get("max_span", 4.0 * unit.x))
-	var max_void_width: float = float(settings.get("max_void_width", 2.0 * unit.x))
-	var max_void_depth: float = float(settings.get("max_void_depth", 4.0 * unit.y))
-	var worker_width: float = float(settings.get("worker_width", 0.18 * unit.x))
-	var worker_height: float = float(settings.get("worker_height", 0.9 * unit.y))
-	var clearance: float = float(settings.get("clearance", 0.02 * unit.y))
-	var result := {"ok": false, "reason": "invalid_settings", "sections": [],
-		"posts": [], "transitions": []}
-	if not is_equal_approx(start.y, finish.y) or finish.x <= start.x \
-			or post_width <= 0.0 or max_span <= post_width or max_post_height < 0.0:
-		return result
-	if not _scaffold_clear_segment(placed, start, finish,
-			worker_width, worker_height, clearance):
-		result.reason = "deck_blocked"
-		return result
-	var section_count := maxi(1, ceili((finish.x - start.x) / max_span))
-	var joints: Array[float] = []
-	for index in range(section_count + 1):
-		joints.append(lerpf(start.x, finish.x, float(index) / float(section_count)))
-	var posts: Array[Dictionary] = []
-	for index in range(joints.size()):
-		var joint := joints[index]
-		var centered := clampf(joint - post_width * 0.5,
-			start.x, finish.x - post_width)
-		var post: Dictionary = {}
-		for offset in [0.0, -post_width, post_width, -2.0 * post_width, 2.0 * post_width]:
-			var post_x := clampf(centered + offset, start.x, finish.x - post_width)
-			post = _scaffold_post(placed, post_x, start.y, post_width, max_post_height)
-			if not post.is_empty():
-				break
-		if post.is_empty():
-			result.reason = "post_without_support"
-			return result
-		post["id"] = "run-post:%0.4f:%0.4f:%d" % [joint, start.y, index]
-		posts.append(post)
-	var sections: Array[Dictionary] = []
-	for index in range(section_count):
-		var x0 := joints[index]
-		var x1 := joints[index + 1]
-		if not _scaffold_void_allowed(placed, x0, x1, start.y,
-				max_void_width, max_void_depth):
-			result.reason = "void_limit"
-			return result
-		sections.append({"id": "run:%0.4f:%0.4f:%0.4f" % [x0, x1, start.y],
-			"x0": x0, "x1": x1, "y": start.y,
-			"post_ids": [posts[index].id, posts[index + 1].id]})
-	result.ok = true
-	result.reason = ""
-	result.sections = sections
-	result.posts = posts
-	return result
-
-
-func _scaffold_post(placed: Dictionary, x0: float, top: float,
-		post_width: float, max_height: float) -> Dictionary:
-	var x1 := x0 + post_width
-	var center := (x0 + x1) * 0.5
-	var support := support_below(placed, Vector2(center, top))
-	if support.is_empty() or support.x0 > x0 or support.x1 < x1:
-		return {}
-	if top - float(support.y) > max_height + 0.00001 \
-			or top < float(support.y) - 0.00001:
-		return {}
-	for block: Dictionary in placed.blocks:
-		if block.x0 < x1 and block.x1 > x0 \
-				and block.y0 < top and block.y1 > float(support.y):
-			return {}
-	return {"x0": x0, "x1": x1, "y0": support.y, "y1": top,
-		"support_id": support.id}
-
-
-func _scaffold_void_allowed(placed: Dictionary, x0: float, x1: float,
-		deck_y: float, max_width: float, max_depth: float) -> bool:
-	# Measure the original profile before adding posts. Split at every block edge.
-	var cuts: Array[float] = [x0, x1]
-	for block: Dictionary in placed.blocks:
-		if block.x0 > x0 and block.x0 < x1:
-			cuts.append(block.x0)
-		if block.x1 > x0 and block.x1 < x1:
-			cuts.append(block.x1)
-	for surface: Dictionary in placed.surfaces:
-		if surface.x0 > x0 and surface.x0 < x1:
-			cuts.append(surface.x0)
-		if surface.x1 > x0 and surface.x1 < x1:
-			cuts.append(surface.x1)
-	cuts.sort()
-	var void_start := INF
-	for i in range(cuts.size() - 1):
-		var a := cuts[i]
-		var b := cuts[i + 1]
-		if b <= a:
-			continue
-		var support := support_below(placed, Vector2((a + b) * 0.5, deck_y))
-		if support.is_empty() or deck_y - float(support.y) > max_depth:
-			if is_inf(void_start):
-				void_start = a
-			if b - void_start > max_width:
-				return false
-		else:
-			void_start = INF
-	return true
-
-
-func _scaffold_clear_segment(placed: Dictionary, start: Vector2, finish: Vector2,
-		worker_width: float, worker_height: float, clearance: float) -> bool:
-	# Clip the whole center segment against each block expanded by worker size.
-	# Exact intervals include joints and narrow overhangs between sample points.
-	for block: Dictionary in placed.blocks:
-		var minimum := Vector2(float(block.x0) - worker_width * 0.5 + 0.00001,
-			float(block.y0) - worker_height - clearance + 0.00001)
-		var maximum := Vector2(float(block.x1) + worker_width * 0.5 - 0.00001,
-			float(block.y1) - 0.00001)
-		if _segment_enters_open_rect(start, finish, minimum, maximum):
-			return false
-	return true
-
-
-func _segment_enters_open_rect(start: Vector2, finish: Vector2,
-		minimum: Vector2, maximum: Vector2) -> bool:
-	var lower := 0.0
-	var upper := 1.0
-	var delta := finish - start
-	for axis in range(2):
-		var value: float = start.x if axis == 0 else start.y
-		var movement: float = delta.x if axis == 0 else delta.y
-		var low: float = minimum.x if axis == 0 else minimum.y
-		var high: float = maximum.x if axis == 0 else maximum.y
-		if absf(movement) < 0.00000001:
-			if value <= low or value >= high:
-				return false
-			continue
-		var enter := (low - value) / movement
-		var leave := (high - value) / movement
-		lower = maxf(lower, minf(enter, leave))
-		upper = minf(upper, maxf(enter, leave))
-		if lower >= upper:
-			return false
-	return true

@@ -32,7 +32,9 @@ if (Test-Path -LiteralPath $piramidaGodot -PathType Leaf) {
 | 16 ноября 2026 | Свежий экспорт Windows Wallpaper, `Piramida.exe --headless -- --verify-wallpaper-cycles` | Два полных цикла и обе паузы по 5 с. SHA-256 контрольных `save.json` и `save.json.bak` совпали до и после прогона. |
 | 15 ноября 2026 | `--headless --path . --script res://tools/check-giza-sky.gd` | Восемь сверок для Гизы и проверка кульминации Сириуса. Максимальные отклонения по паре азимут–высота 0,0127° для Солнца и 0,2098° для Луны. |
 
-Сценовый тест и флаг `--verify-wallpaper-cycles` в свежем экспорте начинают стройку с нуля и создают отдельный временный каталог на запуск. В нём хранятся снимки, резервы и файлы проверок миграции. Godot удаляет каталог при штатном завершении. Штатный запуск читает и записывает `user://wallpaper/save.json`.
+Сценовый тест и флаг `--verify-wallpaper-cycles` начинают стройку с нуля и создают отдельный временный каталог. Godot удаляет каталог при штатном завершении. `tests/wallpaper_cycles.gd` отдельно проверяет встроенный чертёж, его карьер и миграции снимков. Запускайте его, когда требуется покрыть эти инварианты.
+
+Для проверки повторного сброса используйте [малый смешанный чертёж](../tests/fixtures/completion_blueprint.json). Для проверки проходимости передайте абсолютный путь к копии нужного чертежа. Режим сверяет число укладок с выбранным чертежом, ждёт 5 секунд после каждого из двух финалов и проверяет оба сброса. Без `--verify-blueprint` флаг запускает встроенный чертёж. Ошибка чтения или проверки явно заданного файла даёт код 1.
 
 Используйте отдельный `APPDATA` для воспроизводимых прогонов и проверки старых EXE, диагностика которых пишет в штатный слот. Чтобы проверить изоляцию, поместите валидные контрольные `save.json` и `save.json.bak` в слот обоев в выделенном `APPDATA` и сравните их SHA-256 до и после запуска. Запустите тест сцены из корня проекта в том же сеансе PowerShell, где задан `$piramidaGodot`.
 
@@ -51,7 +53,22 @@ try {
 }
 ```
 
-Команда явно загружает тест Windows-обоев. Основная сцена проекта — `res://scenes/wallpaper.tscn`; её можно запускать через F5. Для проверки EXE используйте тот же блок с выделенным `APPDATA`, запустите `Start-Process -FilePath $piramidaExe -ArgumentList @('--headless', '--log-file', ('"{0}"' -f $piramidaLog), '--', '--verify-wallpaper-cycles') -WindowStyle Hidden -PassThru -Wait` и проверьте свойство `ExitCode` и журнал. Переменная `$piramidaExe` должна содержать полный путь к проверяемой сборке. Для длительности кадров, GPU, памяти и привязки к Explorer нужны отдельные проверки рабочего стола.
+Для двух малых циклов замените команду Godot внутри блока с выделенным `APPDATA` на один из этих вариантов. `$piramidaExe` — полный путь к проверяемой сборке.
+
+```powershell
+$piramidaBlueprint = (Resolve-Path .\tests\fixtures\completion_blueprint.json).Path
+# Исходник, основная сцена проекта
+& $piramidaGodot --headless --path . --log-file $piramidaLog -- --verify-wallpaper-cycles --verify-blueprint $piramidaBlueprint
+
+# Windows EXE
+$piramidaRun = Start-Process -FilePath $piramidaExe -ArgumentList @(
+    '--headless', '--log-file', ('"{0}"' -f $piramidaLog), '--',
+    '--verify-wallpaper-cycles', '--verify-blueprint', ('"{0}"' -f $piramidaBlueprint)
+) -WindowStyle Hidden -PassThru -Wait
+$piramidaRun.ExitCode
+```
+
+Успешный прогон даёт код 0 и две строки `Verified cycle` с числом блоков чертежа. Для длительности кадров, GPU, памяти и привязки к Explorer нужны отдельные проверки рабочего стола.
 
 ## Живые обои Windows x64
 

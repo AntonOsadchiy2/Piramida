@@ -1,6 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#include <algorithm>
+#include <atomic>
 #include <cwchar>
 #include <string>
 #include <vector>
@@ -8,7 +10,7 @@
 namespace {
 HANDLE stop_event;
 HANDLE instance;
-HWND renderer;
+std::atomic<HWND> renderer{nullptr};
 HWND tray_window;
 NOTIFYICONDATAW tray_icon{};
 constexpr UINT WM_TRAY = WM_APP + 1;
@@ -22,6 +24,8 @@ constexpr UINT MENU_SPEED_4 = 1012;
 constexpr UINT MENU_SPEED_8 = 1013;
 constexpr UINT MENU_SPEED_16 = 1014;
 constexpr UINT MENU_SPEED_32 = 1015;
+constexpr UINT MENU_BLUEPRINT_FIRST = 2000;
+constexpr wchar_t kBlueprintSelection[] = L"blueprint-selection.txt";
 int selected_time_scale = 1;
 
 constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -102,14 +106,20 @@ bool set_startup(bool enabled) {
     return success;
 }
 
-void request_panel_action(const wchar_t* filename, bool reset_progress = false) {
+bool wallpaper_path(std::wstring& path, const wchar_t* filename) {
     DWORD capacity = GetEnvironmentVariableW(L"APPDATA", nullptr, 0);
-    if (!capacity) return;
+    if (!capacity) return false;
     std::wstring appdata(capacity, L'\0');
     DWORD length = GetEnvironmentVariableW(L"APPDATA", &appdata[0], capacity);
-    if (!length || length >= capacity) return;
+    if (!length || length >= capacity) return false;
     appdata.resize(length);
-    std::wstring request = appdata + L"\\Godot\\app_userdata\\Пирамида\\wallpaper\\" + filename;
+    path = appdata + L"\\Godot\\app_userdata\\Пирамида\\wallpaper\\" + filename;
+    return true;
+}
+
+void request_panel_action(const wchar_t* filename, bool reset_progress = false) {
+    std::wstring request;
+    if (!wallpaper_path(request, filename)) return;
     HANDLE file = CreateFileW(request.c_str(), GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -133,24 +143,13 @@ void request_panel_action(const wchar_t* filename, bool reset_progress = false) 
     CloseHandle(file);
 }
 
-bool time_scale_path(std::wstring& path, const wchar_t* filename) {
-    DWORD capacity = GetEnvironmentVariableW(L"APPDATA", nullptr, 0);
-    if (!capacity) return false;
-    std::wstring appdata(capacity, L'\0');
-    DWORD length = GetEnvironmentVariableW(L"APPDATA", &appdata[0], capacity);
-    if (!length || length >= capacity) return false;
-    appdata.resize(length);
-    path = appdata + L"\\Godot\\app_userdata\\Пирамида\\wallpaper\\" + filename;
-    return true;
-}
-
 bool valid_time_scale(int value) {
     return value == 1 || value == 4 || value == 8 || value == 16 || value == 32;
 }
 
 int load_time_scale() {
     std::wstring path;
-    if (!time_scale_path(path, L"time-scale.txt")) return 1;
+    if (!wallpaper_path(path, L"time-scale.txt")) return 1;
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -168,16 +167,13 @@ int load_time_scale() {
     return valid_time_scale(value) ? value : 1;
 }
 
-bool save_time_scale(int value) {
-    if (!valid_time_scale(value)) return false;
+bool save_tray_preference(const wchar_t* filename, const wchar_t* scratch, const std::string& text) {
     std::wstring path;
     std::wstring temporary;
-    if (!time_scale_path(path, L"time-scale.txt")
-        || !time_scale_path(temporary, L"time-scale.tmp")) return false;
+    if (!wallpaper_path(path, filename) || !wallpaper_path(temporary, scratch)) return false;
     HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
-    const std::string text = std::to_string(value);
     DWORD written = 0;
     bool success = WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr)
         && written == text.size();
@@ -189,12 +185,77 @@ bool save_time_scale(int value) {
 }
 
 void select_time_scale(int value) {
-    if (save_time_scale(value)) {
+    if (valid_time_scale(value)
+        && save_tray_preference(L"time-scale.txt", L"time-scale.tmp", std::to_string(value))) {
         selected_time_scale = value;
         return;
     }
     MessageBoxW(tray_window, L"Не удалось сохранить скорость стройки.",
         L"Пирамида", MB_OK | MB_ICONERROR);
+}
+
+struct BlueprintMenuEntry {
+    std::string id;
+    std::wstring label;
+};
+
+bool wallpaper_file_exists(const wchar_t* filename) {
+    std::wstring path;
+    if (!wallpaper_path(path, filename)) return false;
+    DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+std::string utf8(const std::wstring& value) {
+    int count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (!count) return {};
+    std::string result(count, '\0');
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), &result[0], count, nullptr, nullptr)) return {};
+    return result;
+}
+
+std::vector<BlueprintMenuEntry> list_blueprints() {
+    std::vector<BlueprintMenuEntry> entries{{"default", L"Стандартная пирамида"}};
+    if (wallpaper_file_exists(L"blueprint.json")) entries.push_back({"legacy", L"Прежний чертёж"});
+    const size_t first_named = entries.size();
+    std::wstring pattern;
+    if (!wallpaper_path(pattern, L"blueprints\\b-*.json")) return entries;
+    WIN32_FIND_DATAW info{};
+    HANDLE files = FindFirstFileW(pattern.c_str(), &info);
+    if (files == INVALID_HANDLE_VALUE) return entries;
+    do {
+        if (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+        std::wstring filename = info.cFileName;
+        if (filename.size() < 8 || filename.size() > 67 || filename.compare(0, 2, L"b-") != 0
+            || filename.compare(filename.size() - 5, 5, L".json") != 0) continue;
+        std::wstring id = filename.substr(0, filename.size() - 5);
+        std::string encoded = utf8(id);
+        if (encoded.empty() || id.find_first_of(L"&\t\r\n") != std::wstring::npos) continue;
+        entries.push_back({encoded, id.substr(2)});
+    } while (FindNextFileW(files, &info));
+    FindClose(files);
+    std::sort(entries.begin() + first_named, entries.end(), [](const BlueprintMenuEntry& a, const BlueprintMenuEntry& b) {
+        return CompareStringEx(LOCALE_NAME_USER_DEFAULT, SORT_DIGITSASNUMBERS,
+            a.label.c_str(), -1, b.label.c_str(), -1, nullptr, nullptr, 0) == CSTR_LESS_THAN;
+    });
+    return entries;
+}
+
+std::string read_blueprint_selection(const std::vector<BlueprintMenuEntry>& entries) {
+    std::wstring path;
+    if (!wallpaper_path(path, kBlueprintSelection)) return "default";
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return entries.size() > 1 && entries[1].id == "legacy" ? "legacy" : "default";
+    char buffer[256]{};
+    DWORD count = 0;
+    bool success = ReadFile(file, buffer, sizeof(buffer), &count, nullptr) != FALSE;
+    CloseHandle(file);
+    return success ? std::string(buffer, count) : "default";
 }
 
 void show_tray_menu() {
@@ -206,6 +267,20 @@ void show_tray_menu() {
     AppendMenuW(menu, MF_STRING, MENU_OPEN_PANEL, L"Открыть панель");
     AppendMenuW(menu, MF_STRING, MENU_RESET_PROGRESS, L"Сбросить прогресс");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    const auto blueprints = list_blueprints();
+    HMENU blueprint_menu = CreatePopupMenu();
+    if (blueprint_menu) {
+        const auto selected = read_blueprint_selection(blueprints);
+        UINT checked = MENU_BLUEPRINT_FIRST;
+        for (size_t i = 0; i < blueprints.size(); ++i) {
+            auto command = MENU_BLUEPRINT_FIRST + static_cast<UINT>(i);
+            AppendMenuW(blueprint_menu, MF_STRING, command, blueprints[i].label.c_str());
+            if (blueprints[i].id == selected) checked = command;
+        }
+        CheckMenuRadioItem(blueprint_menu, MENU_BLUEPRINT_FIRST,
+            MENU_BLUEPRINT_FIRST + static_cast<UINT>(blueprints.size()) - 1, checked, MF_BYCOMMAND);
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(blueprint_menu), L"Чертёж");
+    }
     AppendMenuW(speed_menu, MF_STRING, MENU_SPEED_1, L"×1");
     AppendMenuW(speed_menu, MF_STRING, MENU_SPEED_4, L"×4");
     AppendMenuW(speed_menu, MF_STRING, MENU_SPEED_8, L"×8");
@@ -226,12 +301,24 @@ void show_tray_menu() {
     POINT point{};
     GetCursorPos(&point);
     SetForegroundWindow(tray_window);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, point.x, point.y, 0, tray_window, nullptr);
+    UINT command = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+        point.x, point.y, 0, tray_window, nullptr);
     PostMessageW(tray_window, WM_NULL, 0, 0);
     DestroyMenu(menu);
+    if (command >= MENU_BLUEPRINT_FIRST && command - MENU_BLUEPRINT_FIRST < blueprints.size()) {
+        const auto& id = blueprints[command - MENU_BLUEPRINT_FIRST].id;
+        if (!save_tray_preference(kBlueprintSelection, L"blueprint-selection.tmp", id)) {
+            MessageBoxW(tray_window, L"Не удалось сохранить выбор чертежа.", L"Пирамида", MB_OK | MB_ICONERROR);
+        }
+    } else if (command) {
+        SendMessageW(tray_window, WM_COMMAND, command, 0);
+    }
 }
 
+void forward_edge_motion(HRAWINPUT input);
+
 LRESULT CALLBACK tray_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_INPUT) forward_edge_motion(reinterpret_cast<HRAWINPUT>(lparam));
     if (message == WM_TRAY && lparam == WM_RBUTTONUP) { show_tray_menu(); return 0; }
     if (message == WM_COMMAND) {
         if (LOWORD(wparam) == MENU_CLOSE) {
@@ -265,7 +352,81 @@ LRESULT CALLBACK tray_proc(HWND window, UINT message, WPARAM wparam, LPARAM lpar
     return DefWindowProcW(window, message, wparam, lparam);
 }
 
-DWORD WINAPI tray_loop(void*) {
+HWND wallpaper_under_cursor(POINT screen, POINT& client, RECT& bounds, bool edge = false) {
+    HWND target = renderer.load();
+    if (!target || !IsWindowVisible(target)
+        || !(GetWindowLongPtrW(target, GWL_STYLE) & WS_CHILD)) return nullptr;
+    client = screen;
+    if (!ScreenToClient(target, &client) || !GetClientRect(target, &bounds)
+        || !PtInRect(&bounds, client)) return nullptr;
+    if (edge && client.x != bounds.left && client.x != bounds.right - 1
+        && client.y != bounds.top && client.y != bounds.bottom - 1) return nullptr;
+
+    // Explorer's icon window covers the disabled renderer. Match the desktop
+    // surface, including the separate icon host used in classic Explorer.
+    HWND parent = GetAncestor(target, GA_PARENT);
+    HWND root = GetAncestor(WindowFromPoint(screen), GA_ROOT);
+    if (!root || !parent) return nullptr;
+    if (root == GetAncestor(parent, GA_ROOT)) return target;
+    // The taskbar covers the bottom pixel of a normal desktop.
+    if (edge && root == FindWindowW(L"Shell_TrayWnd", nullptr)) return target;
+    DWORD desktop_pid = 0;
+    DWORD hit_pid = 0;
+    GetWindowThreadProcessId(parent, &desktop_pid);
+    GetWindowThreadProcessId(root, &hit_pid);
+    return desktop_pid == hit_pid && FindWindowExW(root, nullptr, L"SHELLDLL_DefView", nullptr)
+        ? target : nullptr;
+}
+
+void forward_edge_delta(POINT screen, LONG dx, LONG dy) {
+    if ((!dx && !dy) || GetAsyncKeyState(VK_LBUTTON) < 0
+        || GetAsyncKeyState(VK_RBUTTON) < 0 || GetAsyncKeyState(VK_MBUTTON) < 0) return;
+
+    POINT client{};
+    RECT bounds{};
+    HWND target = wallpaper_under_cursor(screen, client, bounds, true);
+    if (!target) return;
+    // Encode only outward motion as a pointer just beyond the client edge.
+    POINT outside = client;
+    if (client.x == bounds.left && dx < 0) outside.x = bounds.left - 4;
+    if (client.x == bounds.right - 1 && dx > 0) outside.x = bounds.right + 4;
+    if (client.y == bounds.top && dy < 0) outside.y = bounds.top - 4;
+    if (client.y == bounds.bottom - 1 && dy > 0) outside.y = bounds.bottom + 4;
+    if (outside.x != client.x || outside.y != client.y)
+        PostMessageW(target, WM_MOUSEMOVE, 0, MAKELPARAM(outside.x, outside.y));
+}
+
+void forward_edge_motion(HRAWINPUT input) {
+    RAWINPUT raw{};
+    UINT size = sizeof(raw);
+    if (GetRawInputData(input, RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) == UINT(-1)
+        || raw.header.dwType != RIM_TYPEMOUSE || (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
+        return;
+    POINT cursor{};
+    if (GetCursorPos(&cursor))
+        forward_edge_delta(cursor, raw.data.mouse.lLastX, raw.data.mouse.lLastY);
+}
+
+LRESULT CALLBACK wallpaper_mouse(int code, WPARAM message, LPARAM data) {
+    if (code == HC_ACTION && message == WM_MOUSEWHEEL) {
+        const auto& mouse = *reinterpret_cast<const MSLLHOOKSTRUCT*>(data);
+        POINT client{};
+        RECT bounds{};
+        if (HWND target = wallpaper_under_cursor(mouse.pt, client, bounds)) {
+            PostMessageW(target, WM_MOUSEWHEEL, MAKEWPARAM(0, HIWORD(mouse.mouseData)),
+                MAKELPARAM(mouse.pt.x, mouse.pt.y));
+        }
+    } else if (code == HC_ACTION && message == WM_MOUSEMOVE) {
+        // The hook can see the proposed position before Windows clips it.
+        const auto& mouse = *reinterpret_cast<const MSLLHOOKSTRUCT*>(data);
+        POINT cursor{};
+        if (GetCursorPos(&cursor))
+            forward_edge_delta(cursor, mouse.pt.x - cursor.x, mouse.pt.y - cursor.y);
+    }
+    return CallNextHookEx(nullptr, code, message, data);
+}
+
+DWORD WINAPI tray_loop(void* extension_module) {
     HINSTANCE module = GetModuleHandleW(nullptr);
     WNDCLASSW klass{};
     klass.lpfnWndProc = tray_proc;
@@ -291,8 +452,15 @@ DWORD WINAPI tray_loop(void*) {
     wcscpy_s(tray_icon.szTip, L"Пирамида — живые обои");
     Shell_NotifyIconW(NIM_ADD, &tray_icon);
     if (application_icon) DestroyIcon(application_icon);
+    RAWINPUTDEVICE mouse{0x01, 0x02, RIDEV_INPUTSINK, tray_window};
+    if (!RegisterRawInputDevices(&mouse, 1, sizeof(mouse)))
+        OutputDebugStringW(L"Piramida: could not register raw mouse input.\n");
+    HHOOK mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, wallpaper_mouse,
+        static_cast<HMODULE>(extension_module), 0);
+    if (!mouse_hook) OutputDebugStringW(L"Piramida: could not install wallpaper mouse hook.\n");
     MSG message;
     while (GetMessageW(&message, nullptr, 0, 0) > 0) DispatchMessageW(&message);
+    if (mouse_hook) UnhookWindowsHookEx(mouse_hook);
     return 0;
 }
 
@@ -500,14 +668,14 @@ struct Initialization {
 
 void initialize(void*, int level) {
     if (level != 2) return;
-    HMODULE module;
+    HMODULE module = nullptr;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
         reinterpret_cast<LPCWSTR>(&initialize), &module);
     stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (stop_event) {
         HANDLE thread = CreateThread(nullptr, 0, watch_desktop, nullptr, 0, nullptr);
         if (thread) CloseHandle(thread);
-        thread = CreateThread(nullptr, 0, tray_loop, nullptr, 0, nullptr);
+        thread = CreateThread(nullptr, 0, tray_loop, module, 0, nullptr);
         if (thread) CloseHandle(thread);
     }
 }

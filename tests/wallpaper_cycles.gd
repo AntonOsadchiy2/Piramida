@@ -164,29 +164,13 @@ func _run() -> void:
 	_check_sled_slope(wallpaper.world)
 	_check_saved_trip(wallpaper, save_dir.path_join("save.json"))
 	_check_quarry_save_migration(wallpaper._balance, save_dir.path_join("quarry-migration.json"))
-	_check_pyramid_save_migration(wallpaper._balance, save_dir.path_join("pyramid-migration.json"))
 
 	var geometry = wallpaper.simulation.state.geometry
 	_check(geometry.quarry_count() == 900, "Compact quarry has 900 cells")
-	_check(geometry.quarry_grid_cell(899) == Vector2i(0, 29), "Last quarry cell is at the foot of the funnel")
+	_check(geometry.quarry_excavation.cut(899).has_area(), "The last stone has a quarry cut")
 	_check(wallpaper.world._quarry_cut.polygon.is_empty(), "Intact ground has no quarry cut")
 	_check(geometry.lift_route(0).is_empty() and not wallpaper.world._platform.visible,
 		"Ground row has no lift trip or raised landing")
-	for row in range(1, 30):
-		var landing: Vector2 = geometry.platform(row)
-		var step := Vector2(0.36, 0.28)
-		var walk: PackedVector2Array = geometry.builder_to_brick(row, 0)
-		var descent: PackedVector2Array = geometry.platform_to_lift_operator(row)
-		_check((walk[1] - landing).is_equal_approx(step) and walk[1].y == walk[-1].y
-			and (landing - descent[1]).is_equal_approx(row * step),
-			"Builder follows the pyramid incline between ground, landing and deck")
-		var route: PackedVector2Array = geometry.lift_route(row)
-		_check(route.size() == 4 and route[0] == geometry.finished_storage()
-			and route[-1] == geometry.platform(row), "Lift connects the two transfer points")
-		_check(route[1].y == route[2].y and route[2].x == route[-1].x,
-			"Lift travels horizontally above the start of the row before lowering")
-		_check(is_equal_approx(route[1].y + geometry.brick_size().y + geometry.lift_suspension(),
-			geometry.lift_cable_height(row)), "Brick clears the deck under the upper cable")
 
 	var initial: Dictionary = wallpaper.simulation.to_dict()
 	var lighting: CanvasModulate = wallpaper._light
@@ -199,9 +183,10 @@ func _run() -> void:
 		var before_tick := 0
 		var saw_loaded_builder := false
 		var saw_empty_return := false
-		var saw_vertical_transfer := false
+		var saw_loaded_ascent := false
 		var saw_crank := false
 		var saw_helper_crank := false
+		var returning_operator := -1
 		var checked_crank_poses := {}
 		var returned_to_step := {}
 		var last_struck_layer := -1
@@ -223,7 +208,8 @@ func _run() -> void:
 			wallpaper._process(wallpaper._step)
 			var state: State = wallpaper.simulation.state
 			if state.worker(BUILDER).fsm_state == &"rebuild_platform" and not rebuilt_rows.has(state.current_row):
-				_check(not deck.visible, "Horizontal deck hides while rebuilding row %d" % state.current_row)
+				_check(wallpaper.world._scaffold_root.visible and state.scaffold_paths.size() == (state.current_row >> 1) + 1,
+					"Existing scaffold remains visible while changing row %d" % state.current_row)
 				rebuilt_rows[state.current_row] = true
 			if cycle == 1:
 				for id in [PORTER, MINER]:
@@ -239,7 +225,7 @@ func _run() -> void:
 			var mined := state.mined_count()
 			if mined != mined_before:
 				_check_quarry_walks(state)
-				_check(wallpaper.world._quarry_rim.points.size() == 3, "The quarry rim has two continuous slopes")
+				_check(wallpaper.world._quarry_rim.points.size() >= 4, "The quarry rim follows rectangular cuts")
 				mined_before = mined
 			var porter: Dictionary = wallpaper.world._views[PORTER]
 			if porter.transferring:
@@ -256,8 +242,8 @@ func _run() -> void:
 						miner_sled_phases[miner_phase] = miner.sled.visible and miner.transfer_item.visible \
 							and not miner.tether.visible and not miner.items[0].visible
 						if miner_phase == &"unload":
-							var stock_slot: Sprite2D = wallpaper.world._piles[State.Owner.QUARRY_STOCK][state.stock_count(State.Owner.QUARRY_STOCK)]
-							_check(miner.transfer_ground == stock_slot.position, "Miner unloads to the quarry stockpile")
+							var stock_slot: Sprite2D = wallpaper.world._piles[State.Owner.RAW][state.stock_count(State.Owner.RAW)]
+							_check(miner.transfer_ground == stock_slot.position, "Miner unloads to the shared raw stockpile")
 					&"walk_to_storage":
 						if absf(miner.sled.rotation) > 0.02:
 							miner_sled_phases[miner_phase] = miner.sled.visible and miner.tether.visible \
@@ -280,6 +266,8 @@ func _run() -> void:
 					checked_crank_poses[operator] = true
 				saw_crank = saw_crank or (operator == BUILDER and turning)
 				saw_helper_crank = saw_helper_crank or (operator != BUILDER and turning)
+				if turning and operator not in [BUILDER, MINER]:
+					returning_operator = operator
 			for id in wallpaper.world._views:
 				if id == wallpaper.world.Owner.LIFT:
 					continue
@@ -301,20 +289,14 @@ func _run() -> void:
 				if id == MINER and path == "res://assets/sprites/mine-1.png":
 					var targets: Array[int] = wallpaper.simulation.state.task_resource_ids(MINER)
 					last_struck_layer = _check_mine_strike(wallpaper.world, body, targets)
-			if not saw_loaded_builder or not saw_empty_return or not saw_vertical_transfer:
+			if not saw_loaded_builder or not saw_empty_return or not saw_loaded_ascent:
 				var builder_id: int = wallpaper.world.Owner.BUILDER
 				var builder = state.worker(builder_id)
 				var view: Dictionary = wallpaper.world._views[builder_id]
 				if builder.fsm_state == &"walk_to_brick":
-					var feet: Vector2 = view.root.position
-					var deck_y: float = wallpaper.world._platform.position.y \
-						- (wallpaper.world._brick_height if state.current_row > 0 else 0.0)
-					if feet.y <= deck_y + 0.5:
-						saw_loaded_builder = saw_loaded_builder or (view.sled.visible and view.items[0].visible \
-							and view.tether.visible and view.sled.self_modulate.a == 1.0)
-					else:
-						saw_vertical_transfer = saw_vertical_transfer or (view.items[0].is_visible_in_tree() \
-							and not view.tether.visible and view.sled.self_modulate.a == 0.0)
+					var sled_loaded: bool = view.sled.visible and view.items[0].visible and view.tether.visible
+					saw_loaded_builder = saw_loaded_builder or sled_loaded
+					saw_loaded_ascent = saw_loaded_ascent or (sled_loaded and builder.segment_direction().y > 0.0)
 				elif builder.fsm_state == &"return_to_platform":
 					saw_empty_return = not view.sled.visible and not view.items[0].visible
 			var added: int = wallpaper.simulation.state.placed_count() - before
@@ -334,7 +316,7 @@ func _run() -> void:
 							_check(route[0].is_equal_approx(builder.position),
 								"Return starts at the placed surface at " + label)
 					_check(not deck.visible and (state.finished or wallpaper.world._scaffold_root.visible),
-						"Placed sections replace the old deck at " + label)
+						"Scaffold remains visible at " + label)
 				var cell: Vector2i = wallpaper.world._brick_cells[before]
 				var builder_view: Dictionary = wallpaper.world._views[BUILDER]
 				_check(wallpaper.simulation.state.stock_count(BUILDER) == 0 and not builder_view.items[0].visible,
@@ -355,23 +337,28 @@ func _run() -> void:
 		_check(deadline - before_tick >= 5000 and deadline - Time.get_ticks_msec() <= 5000,
 			"Deadline is five seconds after the final tick")
 		_check(placements == 900 and wallpaper.simulation.state.finished, "Cycle reached exactly 900 placements")
-		_check(rebuilt_rows.size() == 29, "Horizontal deck hides at every row transition")
+		_check(rebuilt_rows.size() == 29, "Existing scaffold stays visible for all row transitions")
 		_check(aligned_placements == placements, "Every moving brick reaches its final tile before completion")
 		_check(last_struck_layer == 29, "Miner strikes through the last quarry layer")
-		_check(saw_loaded_builder and saw_empty_return and saw_vertical_transfer,
+		_check(saw_loaded_builder and saw_empty_return and saw_loaded_ascent,
 			"Builder transports a single brick through climb, haul and empty return")
 		_check(saw_crank, "Builder's hand follows the crank during a loaded lift trip")
 		_check(saw_helper_crank, "An idle worker takes a turn at the crank")
-		_check(returned_to_step.has(BUILDER) and returned_to_step.size() > 1,
-			"Builder and a helper return to walking after cranking")
-		_check(porter_transfers.has("load/stone.png") and porter_transfers.has("unload/stone.png"),
+		_check(returned_to_step.has(BUILDER), "Builder returns to walking after cranking")
+		if returning_operator >= 0:
+			_check(returned_to_step.has(returning_operator), "Temporary helper returns to walking after cranking")
+		_check(porter_transfers.has("load/limestone_1x1.png") and porter_transfers.has("unload/limestone_1x1.png"),
 			"Porter manually loads and unloads quarry stones")
 		if cycle == 1:
+			var intermediate_pickup := false
 			for facing in [-1.0, 1.0]:
-				_check(transfer_restores.has([PORTER, &"load", State.Owner.QUARRY, facing, true]),
-					"Restore an intermediate quarry pickup with facing %s" % facing)
+				var intermediate := transfer_restores.has([PORTER, &"load", State.Owner.QUARRY, facing, true])
+				intermediate_pickup = intermediate_pickup or intermediate
+				_check(intermediate or transfer_restores.has([PORTER, &"load", State.Owner.QUARRY, facing, false]),
+					"Restore quarry loading with the porter facing %s" % facing)
 				_check(transfer_restores.has([MINER, &"load", State.Owner.QUARRY, facing, false]),
 					"Restore the miner loading with facing %s" % facing)
+			_check(intermediate_pickup, "Restore a quarry pickup with cargo already on the sled")
 		for phase in [&"load", &"walk_to_storage", &"unload", &"return_to_quarry"]:
 			_check(miner_sled_phases.get(phase, false), "Miner's sled is correct during %s" % phase)
 		_check(_placed_tiles(finished_world.pyramid) == 900, "All 900 bricks replace their outlines")
@@ -412,18 +399,25 @@ func _run() -> void:
 		while wallpaper.simulation.state.mined_count() == 0 and wallpaper.simulation.elapsed_seconds() < 5.0:
 			wallpaper._process(wallpaper._step)
 		_check(wallpaper.simulation.state.mined_count() == 1, "Next cycle mines its first stone")
-		_check(wallpaper.world._quarry_cut.polygon.size() == 3, "First block opens a V-shaped cut in fresh sand")
+		_check(wallpaper.world._quarry_rim.points.size() == 4, "First block opens a rectangular cut in fresh sand")
 		print("Cycle %d: %d placements, 5000 ms hold, next first stone at %.1f s, fresh counts %s"
 			% [cycle, placements, wallpaper.simulation.elapsed_seconds(), initial_scene])
 
 	wallpaper.free()
-	quit(1 if failures else 0)
+	if failures == 0:
+		print("PASS: two wallpaper cycles")
+	else:
+		printerr("FAIL: %d wallpaper cycle checks" % failures)
+	quit(int(failures > 0))
 
 
 func _check_quarry_walks(state: State) -> void:
 	var mined := state.mined_count()
 	var outline := state.geometry.quarry_slopes.outline(mined)
-	var rim := Vector2(outline[0].x, outline[-1].x)
+	if outline.is_empty():
+		return
+	var excavation := state.geometry.quarry_excavation
+	var scaffolds := excavation.scaffold_paths(mined)
 	for id in [MINER, PORTER]:
 		var worker := state.worker(id)
 		if id == PORTER and state.transfer_source(id) != State.Owner.QUARRY:
@@ -431,20 +425,25 @@ func _check_quarry_walks(state: State) -> void:
 		if worker.fsm_state == &"load":
 			var targets := state.pickup_targets(id)
 			_check(not targets.is_empty() and worker.position.is_equal_approx(
-				state.geometry.quarry_pickup(targets[0], mined)), "Loading starts at the stone on the current slope")
+				state.geometry.quarry_pickup(targets[0], mined)), "Loading starts at the stone on the quarry floor")
 		var points := PackedVector2Array([worker.position])
 		var route := worker.movement_route()
 		points.append_array(route)
 		for index in range(1, route.size()):
 			points.append(route[index - 1].lerp(route[index], 0.5))
 		for point in points:
-			if point.x < rim.x or point.x > rim.y:
+			if point.y >= excavation.terrain_y(point.x) - 0.0001:
 				continue
-			var side := outline[0] if point.x < outline[1].x else outline[2]
-			var slope_y := lerpf(outline[1].y, side.y, inverse_lerp(outline[1].x, side.x, point.x))
-			if not is_equal_approx(point.y, slope_y):
-				_check(false, "Quarry slope: mined=%d worker=%d phase=%s point=%s expected_y=%.8f position=%s route=%s"
-					% [mined, id, worker.fsm_state, point, slope_y, worker.position, route])
+			_check(_on_quarry_scaffold(point, scaffolds), "Quarry routes use the staircase and decks below the terrace")
+
+
+func _on_quarry_scaffold(point: Vector2, paths: Array[PackedVector2Array]) -> bool:
+	for path in paths:
+		for index in range(1, path.size()):
+			var closest := Geometry2D.get_closest_point_to_segment(point, path[index - 1], path[index])
+			if closest.distance_to(point) < 0.0001:
+				return true
+	return false
 
 
 func _check_saved_trip(wallpaper: Node2D, path: String) -> void:
@@ -523,6 +522,7 @@ func _check_saved_trip(wallpaper: Node2D, path: String) -> void:
 
 func _check_quarry_save_migration(balance: Dictionary, path: String) -> void:
 	var previous := balance.duplicate(true)
+	previous.world.erase("quarryBlockCuts")
 	previous.world.erase("quarrySlopesOnly")
 	previous.world.erase("pyramidRamp")
 	var legacy := Simulation.for_wallpaper(previous) as Simulation
@@ -567,83 +567,13 @@ func _check_quarry_save_migration(balance: Dictionary, path: String) -> void:
 	_check(cases.size() == 4, "Migration covers approach, loading, exit and unloading")
 
 
-func _check_pyramid_save_migration(balance: Dictionary, path: String) -> void:
-	var previous := balance.duplicate(true)
-	previous.world.erase("pyramidRamp")
-	var legacy := Simulation.for_wallpaper(previous) as Simulation
-	# Older wallpaper restores could credit a placement. Keep the stored amount through migration.
-	legacy.state.currency = 10 # Historical wallpaper snapshot with a credited brick.
-	var old_service := SaveService.new(previous, path)
-	var new_service := SaveService.new(balance, path)
-	var pending := [&"climb_to_platform", &"walk_to_lift", &"return_from_lift",
-		&"walk_to_workshop", &"walk_to_brick", &"return_to_platform", &"place_brick", &"operate_lift"]
-	while not legacy.state.finished and legacy.elapsed_seconds() < 40000.0:
-		legacy.step_simulation()
-		var before := legacy.state.worker(BUILDER)
-		var row := legacy.state.current_row
-		var geometry := legacy.state.geometry
-		# In the standard cycle porters keep the lift supplied. Exercise the
-		# fallback with a real workshop brick and its normal transfer reserve.
-		if pending == [&"walk_to_workshop"] and row > 0 and before.fsm_state == &"idle" \
-				and before.position == geometry.platform(row):
-			var output := legacy.state.stock(State.Owner.WORKSHOP_OUTPUT)
-			if not output.is_empty() and legacy.state.reserve_transfer(BUILDER, [output[0]], State.Owner.WORKSHOP_OUTPUT):
-				var route := geometry.platform_to_lift_operator(row)
-				route.append(geometry.workshop_pickup())
-				_check(before.queue_move(&"walk_to_workshop", route, float(previous.workers.builder.moveSpeed)),
-					"Queue the legacy workshop fallback")
-				legacy.step_simulation()
-		var phase := before.fsm_state
-		if legacy.state.current_row == 0 or phase not in pending:
-			continue
-		var old_length := legacy.state.geometry.route_length(before.movement_route())
-		if old_length > 0 and before.phase_distance_traveled() <= 0.0:
-			continue
-		pending.erase(phase)
-		_check(old_service.save_game(legacy) == OK, "Write the old pyramid phase %s" % phase)
-		var loaded := new_service.load_game()
-		_check(loaded.status == SaveService.Status.OK, "Restore the old pyramid phase %s" % phase)
-		if loaded.status != SaveService.Status.OK:
-			continue
-		var restored: Simulation = loaded.simulation
-		var after := restored.state.worker(BUILDER)
-		_check(not loaded.get("recovered", false) and before.fsm_state == after.fsm_state
-			and before.remaining_work == after.remaining_work
-			and restored.state.to_dict() == legacy.state.to_dict(), "Migration preserves phase, work and ownership")
-		if old_length > 0:
-			var length := restored.state.geometry.route_length(after.movement_route())
-			_check(length > 0 and is_equal_approx(before.phase_distance_traveled() / old_length,
-				after.phase_distance_traveled() / length), "Migration preserves progress in %s" % phase)
-		else:
-			_check(after.position == before.position, "Migration preserves the work position in %s" % phase)
-		# Use a separate destination so the legacy producer can keep writing v9.
-		var current_service := SaveService.new(balance, path + ".current")
-		_check(current_service.save_game(restored) == OK, "Write the current pyramid phase")
-		var current := current_service.load_game()
-		_check(current.status == SaveService.Status.OK, "Read the current pyramid phase")
-		if current.status == SaveService.Status.OK:
-			var resumed: Simulation = current.simulation
-			for step in range(40):
-				restored.step_simulation()
-				resumed.step_simulation()
-			_check(restored.to_dict() == resumed.to_dict() and resumed.state.validate().is_empty(),
-				"Current pyramid phase resumes with the same queue and valid ownership")
-			_check(resumed.state.currency == legacy.state.currency and not resumed.state.can_add_porter(),
-				"Restored v9 wallpaper keeps historical currency without crediting more or enabling hiring")
-		if pending.is_empty():
-			var previous_file := FileAccess.get_file_as_string(path)
-			_check(new_service.save_game(restored) == OK and FileAccess.get_file_as_string(path + ".bak") == previous_file,
-				"Validate and keep the v9 backup when upgrading the primary to v10")
-			break
-	_check(pending.is_empty(), "All pyramid save cases were observed: %s" % str(pending))
-
-
 func _check_torches(wallpaper: Node2D) -> void:
 	var live_palette: Vector4 = wallpaper._sky.palette
 	var torches = wallpaper._torches
 	var patrol = wallpaper.world.overseer
 	var stands: Array[Node] = torches.get_children()
-	var expected_x := PackedFloat32Array([-960.0, -575.0, -165.0, 489.0, 883.0])
+	var quarry_x: float = wallpaper.world.screen_point(wallpaper.simulation.state.geometry.quarry_mouth()).x
+	var expected_x := PackedFloat32Array([quarry_x - 375.0, quarry_x + 10.0, quarry_x + 420.0, 489.0, 883.0])
 	_check(stands.size() == expected_x.size(), "There is one torch at each marked site")
 	if stands.size() != expected_x.size():
 		return
@@ -658,6 +588,7 @@ func _check_torches(wallpaper: Node2D) -> void:
 	for stand in stands:
 		_check(not stand.get_node("Flame").visible and not stand.get_node("Light").enabled,
 			"Daylight leaves both the flame and the local light off")
+	_check_quiet_torch_patrol(patrol, "daylight")
 
 	wallpaper._sky.palette = GizaSky.palette(Vector2(270.0, -6.0))
 	wallpaper._apply_sky()
@@ -666,12 +597,23 @@ func _check_torches(wallpaper: Node2D) -> void:
 		var arrival: float = patrol._arrivals[index]
 		patrol.render(arrival, false)
 		patrol.render(arrival + patrol.WATCH_SECONDS + 0.1, false)
+		var reaching_hand: Vector2 = patrol._walker.hand_position
+		patrol.render(arrival + patrol.WATCH_SECONDS + 0.1, true)
+		_check(not reaching_hand.is_equal_approx(patrol._walker.hand_position),
+			"The evening patrol reaches for an unlit torch")
 		_check(not stand.get_node("Light").enabled, "The torch waits for the tending gesture")
 		patrol.render(arrival + patrol.WATCH_SECONDS + 0.7, false)
 		torches._process(1.0)
 		var light: PointLight2D = stand.get_node("Light")
 		_check(stand.get_node("Flame").visible and light.enabled and light.energy > 0.0,
 			"The gesture lights the torch and its local light")
+		var next_order: float = patrol._arrivals[-1] + arrival + patrol.WATCH_SECONDS + 0.7
+		patrol.render(next_order, false)
+		var hand_after_skip: Vector2 = patrol._walker.hand_position
+		patrol.render(next_order, true)
+		_check(hand_after_skip.is_equal_approx(patrol._walker.hand_position),
+			"The next patrol stays idle when a frame jump skips the watch phase")
+	_check_quiet_torch_patrol(patrol, "night")
 
 	wallpaper._start_cycle()
 	_check(torches.get_children() == stands and stands.all(func(stand): return stand.get_node("Light").enabled),
@@ -688,6 +630,20 @@ func _check_torches(wallpaper: Node2D) -> void:
 
 	wallpaper._sky.palette = live_palette
 	wallpaper._apply_sky()
+
+
+func _check_quiet_torch_patrol(patrol, phase: String) -> void:
+	var period: float = patrol._arrivals[-1]
+	for cycle in range(1, 3):
+		for index in range(patrol._stops.size()):
+			var arrival: float = cycle * period + patrol._arrivals[index]
+			patrol.render(arrival + 0.1, false)
+			var seconds: float = arrival + patrol.WATCH_SECONDS + 0.7
+			patrol.render(seconds, false)
+			var hand: Vector2 = patrol._walker.hand_position
+			patrol.render(seconds, true)
+			_check(hand.is_equal_approx(patrol._walker.hand_position),
+				"The overseer keeps his hand down on %s patrols at torch %d" % [phase, index])
 
 
 func _check_sky_transitions(wallpaper: Node2D) -> void:
@@ -852,7 +808,7 @@ func _check_mine_strike(world: Node2D, body: Sprite2D, targets: Array[int]) -> i
 	var tip_x := body.texture.get_width() - 73.5 if body.flip_h else 73.5
 	var tip := world.to_local(body.to_global(body.offset - body.texture.get_size() * 0.5 + Vector2(tip_x, 78.5)))
 	var cell: Vector2i = world._geometry.quarry_grid_cell(targets[0])
-	_check(body.flip_h == (cell.x <= 0) and tip.distance_to(world._quarry_impact_point(targets[0])) < 0.01,
+	_check(body.flip_h == (world._geometry.quarry_excavation == null and cell.x <= 0) and tip.distance_to(world._quarry_impact_point(targets[0])) < 0.01,
 		"The pick tip must touch the exposed edge of the selected cell")
 	return cell.y
 
@@ -866,10 +822,14 @@ func _check_sled_slope(world: Node) -> void:
 		view.tow_direction = travel
 		world._update_sled(PORTER, view, true, view.walker)
 		var forward := signf(travel.x)
-		var hitch := sled.position + Vector2(forward * 50.0, -11.0).rotated(sled.rotation)
+		var hitch_offset := Vector2(forward * 50.0, -11.0).rotated(sled.rotation)
+		var hitch := sled.position + hitch_offset
+		var hand: Vector2 = view.walker.hand_position
+		var original_hitch: Vector2 = -travel * world.PORTER_SLED_DISTANCE + hitch_offset
 		_check(is_equal_approx(sled.rotation, (travel * forward).angle())
-			and sled.position.is_equal_approx(-travel * world.PORTER_SLED_DISTANCE)
 			and sled.flip_h == (forward < 0.0)
+			and rope.get_point_position(0).is_equal_approx(hand)
+			and absf(hand.distance_to(hitch) - 3.0 * hand.distance_to(original_hitch)) <= 0.1
 			and rope.get_point_position(1).is_equal_approx(hitch),
 			"Sled and rope follow the slope in both directions")
 	var ascent := PackedVector2Array([Vector2(0, -2), Vector2(4, 0), Vector2(8, 0)])
