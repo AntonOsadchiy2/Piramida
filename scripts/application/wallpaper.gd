@@ -109,6 +109,8 @@ func _ready() -> void:
 		if not _attach_desktop():
 			get_tree().quit(1)
 			return
+	if OS.has_feature("single_process_wallpaper") and not _acceptance and not use_temporary_save:
+		_install_bundled_panel_data()
 	_apply_panel_config(_panel_config())
 	_time_scale = _load_time_scale()
 	if _acceptance or use_temporary_save:
@@ -361,6 +363,53 @@ func _poll_tray_requests() -> void:
 	if FileAccess.file_exists(TRAY_OPEN_PANEL_REQUEST):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(TRAY_OPEN_PANEL_REQUEST))
 		_open_panel()
+
+
+func _install_bundled_panel_data() -> void:
+	const DIRECTORY := "user://wallpaper/"
+	const MARKER := DIRECTORY + ".bundled-panel-v1"
+	if FileAccess.file_exists(MARKER):
+		return
+	var new_profile := not DirAccess.dir_exists_absolute(DIRECTORY)
+	var archive := ZIPReader.new()
+	if archive.open("res://data/panel-defaults.zip") != OK:
+		push_warning("Could not open the bundled panel data.")
+		return
+	for relative_path in archive.get_files():
+		if relative_path == "settings.json":
+			if not new_profile:
+				continue
+		else:
+			var filename := relative_path.get_file()
+			if relative_path.get_base_dir() not in ["blueprints", "block-presets", "textures"] \
+					or filename in ["", ".", ".."] or filename != filename.validate_filename():
+				push_warning("Unexpected bundled panel path: " + relative_path)
+				return
+		var destination := DIRECTORY + relative_path
+		if not FileAccess.file_exists(destination) \
+				and not _write_bundled_panel_file(destination, archive.read_file(relative_path)):
+			push_warning("Could not install bundled panel data: " + relative_path)
+			return
+	archive.close()
+	var marker := FileAccess.open(MARKER, FileAccess.WRITE)
+	if marker == null:
+		push_warning("Could not mark the bundled panel data as installed.")
+
+
+func _write_bundled_panel_file(destination: String, content: PackedByteArray) -> bool:
+	if content.is_empty() or DirAccess.make_dir_recursive_absolute(destination.get_base_dir()) != OK:
+		return false
+	var scratch := destination + ".bundled.tmp"
+	var file := FileAccess.open(scratch, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_buffer(content)
+	var error := file.get_error()
+	file.close()
+	if error == OK and DirAccess.rename_absolute(scratch, destination) == OK:
+		return true
+	DirAccess.remove_absolute(scratch)
+	return false
 
 
 func _extract_panel_files() -> String:

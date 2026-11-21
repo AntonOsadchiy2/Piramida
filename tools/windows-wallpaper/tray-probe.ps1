@@ -33,6 +33,10 @@ try {
  if(-not $speedApplied){throw 'Speed x32 was not persisted'}
  if(-not [PiramidaTrayProbe]::PostMessage($window,273,[IntPtr]1011,[IntPtr]::Zero)){throw 'Could not dispatch speed x1 command'}
  $settings=Join-Path $wallpaper 'settings.json'
+ $initialSettings=Get-Content -LiteralPath $settings -Raw | ConvertFrom-Json
+ if($initialSettings.porterCount -ne 4 -or $initialSettings.dresserCount -ne 3 -or $initialSettings.builderCount -ne 3){
+  throw 'Bundled settings were not applied to the new profile'
+ }
  $base=Get-Content (Join-Path $root 'data/balance.json') -Raw | ConvertFrom-Json
  $source=[ordered]@{
   version=1; sizePenalty=1.5
@@ -65,7 +69,13 @@ try {
  if(-not $opened){throw 'Panel URL file not created'}
  $url=(Get-Content -LiteralPath $urlFile -Raw).Trim()
  $response=Invoke-RestMethod ($url+'api/blueprint')
- Write-Output "PASS: tray speed x32 persisted, reload profile created; panel URL=$url; blocks=$($response.blocks.Count); app running=$(-not $p.HasExited)"
+ $catalog=Invoke-RestMethod ($url+'api/blueprints')
+ foreach($name in 'Вавилонская башня','Мавзолей в Галикарнасе'){
+  if($name -notin $catalog.entries.name){throw "Bundled blueprint missing from the panel: $name"}
+ }
+ $presets=Invoke-RestMethod ($url+'api/block-presets')
+ if(@($presets).Count -ne 9){throw 'Bundled block presets are missing from the panel'}
+ Write-Output "PASS: tray speed x32 persisted, reload profile created, bundled catalog opened; panel URL=$url; blocks=$($response.blocks.Count); app running=$(-not $p.HasExited)"
  Write-Output "TEST_APPDATA=$testAppData"
 } finally {
  if($window -ne [IntPtr]::Zero){[PiramidaTrayProbe]::PostMessage($window,273,[IntPtr]1001,[IntPtr]::Zero) | Out-Null}
